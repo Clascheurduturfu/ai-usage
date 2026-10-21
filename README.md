@@ -101,7 +101,7 @@ Build the macOS app and DMG on a Mac:
 sh scripts/build-mac.sh
 ```
 
-Builds are ad-hoc signed by default, so macOS asks again for Keychain access after each update. To keep access across updates, sign every build with the same identity; a self-signed code-signing certificate is enough (no Apple Developer account). Set `AIU_MAC_SIGN_IDENTITY` to its SHA-1 or name, and `AIU_MAC_SIGN_KEYCHAIN` if it lives outside your default keychains. Gatekeeper still treats downloaded copies as unnotarized.
+Builds are ad-hoc signed by default. Set `AIU_MAC_SIGN_IDENTITY` (SHA-1 or name of a code-signing identity; a self-signed certificate works) and, if it lives outside your default keychains, `AIU_MAC_SIGN_KEYCHAIN` to sign every build with the same identity. A stable identity keeps the designated requirement constant, which privacy permissions rely on. It does not stop the one Keychain prompt per update: without an Apple Team ID, macOS ties "Always Allow" to each build's code hash. Gatekeeper still treats downloaded copies as unnotarized.
 
 For a UI-only preview with fictional data:
 

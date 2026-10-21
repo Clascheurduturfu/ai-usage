@@ -20,9 +20,10 @@ architecture=$(node -p "process.arch === 'arm64' ? 'aarch64' : 'x64'")
 app="$build_root/release/bundle/macos/AI Usage.app"
 # Resources can change during rebundling. Sign the final bytes before delivery.
 # Preserve Node's JIT entitlements. This is a local signature, not notarization.
-# Ad-hoc signatures change with every build, so macOS asks again for Keychain
-# access after each update. A stable identity (a self-signed code-signing
-# certificate is enough) keeps the same designated requirement across builds.
+# Optional stable identity (a self-signed code-signing certificate is enough)
+# keeps the designated requirement constant across builds, which privacy (TCC)
+# grants use. Keychain "Always Allow" is still tied to each build's cdhash
+# without an Apple Team ID, so expect one Keychain prompt per update.
 if [ -n "${AIU_MAC_SIGN_IDENTITY:-}" ] && [ -n "${AIU_MAC_SIGN_KEYCHAIN:-}" ]; then
   codesign --force --deep --keychain "$AIU_MAC_SIGN_KEYCHAIN" --sign "$AIU_MAC_SIGN_IDENTITY" --preserve-metadata=entitlements "$app"
 elif [ -n "${AIU_MAC_SIGN_IDENTITY:-}" ]; then
