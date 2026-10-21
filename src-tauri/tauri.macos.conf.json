@@ -1,0 +1,8 @@
+{
+  "productName": "AI Usage",
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.png"],
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
+}

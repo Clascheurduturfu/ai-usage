@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem with AI Usage.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: AI Usage version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows x64
+        - macOS Apple Silicon
+        - Android companion
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps and expected result
+      description: Include the coding tool and its version when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Actual result and sanitized diagnostics
+      description: Remove API keys, tokens, account addresses, private topics and personal paths before attaching logs or screenshots.

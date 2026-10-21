@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#0B0E14</color>
+    <color name="surface">#121722</color>
+    <color name="surfaceStroke">#1D2433</color>
+    <color name="widgetBg">#0B0E14</color>
+    <color name="widgetStroke">#232C3D</color>
+    <color name="textPrimary">#F2F5FA</color>
+    <color name="textSecondary">#98A2B3</color>
+    <color name="textFaint">#6B7280</color>
+    <color name="green">#34D399</color>
+    <color name="amber">#FBBF24</color>
+    <color name="red">#F87171</color>
+    <color name="progressTrack">#232A38</color>
+</resources>

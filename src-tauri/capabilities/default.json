@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local AI Usage window",
+  "windows": ["main", "quota-popover"],
+  "permissions": ["core:default"]
+}

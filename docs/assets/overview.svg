@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600" viewBox="0 0 1280 600" role="img" aria-labelledby="title description">
+  <title id="title">AI Usage — your AI control room</title>
+  <desc id="description">An illustrative dashboard with fictional remaining-capacity cards, a shared library and optional endpoints. No account or personal data is shown.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#101916"/><stop offset="1" stop-color="#172024"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#8ae0b3"/><stop offset="1" stop-color="#79a9ef"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="16" stdDeviation="20" flood-opacity=".25"/></filter>
+  </defs>
+  <rect width="1280" height="600" rx="28" fill="url(#background)"/>
+  <circle cx="1160" cy="20" r="220" fill="#8ae0b3" opacity=".035"/>
+  <circle cx="220" cy="580" r="240" fill="#79a9ef" opacity=".035"/>
+  <g font-family="Inter, Segoe UI, Arial, sans-serif">
+    <rect x="64" y="58" width="52" height="52" rx="15" fill="#8ae0b3" opacity=".13"/>
+    <path d="M77 91h8V77h8v20h8V84" fill="none" stroke="#8ae0b3" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="132" y="96" font-size="36" font-weight="700" fill="#edf5ef">AI Usage<tspan fill="#8ae0b3">.</tspan></text>
+    <text x="64" y="167" font-size="48" font-weight="700" fill="#edf5ef">Your AI control room.</text>
+    <text x="66" y="208" font-size="21" fill="#a4b3aa">Know what you can use. Keep your tools working together.</text>
+    <rect x="1014" y="65" width="194" height="38" rx="19" fill="#8ae0b3" opacity=".1"/>
+    <text x="1111" y="89" text-anchor="middle" font-size="13" font-weight="600" fill="#8ae0b3">LOCAL DATA · YOUR TOOLS</text>
+    <g filter="url(#shadow)">
+      <rect x="64" y="254" width="1152" height="290" rx="20" fill="#111917" stroke="#34453b"/>
+    </g>
+    <text x="92" y="291" font-size="12" letter-spacing="2" fill="#98aea0">AVAILABLE CAPACITY</text>
+    <rect x="90" y="311" width="320" height="116" rx="13" fill="#1a2520" stroke="#314538"/>
+    <text x="109" y="340" font-size="15" font-weight="600" fill="#e5eee7">Coding subscription</text>
+    <text x="109" y="384" font-size="33" font-weight="700" fill="#8ae0b3">72%</text>
+    <text x="190" y="381" font-size="13" fill="#a4b3aa">remaining · resets in 2h 14m</text>
+    <rect x="109" y="402" width="276" height="5" rx="2" fill="#324337"/>
+    <rect x="109" y="402" width="199" height="5" rx="2" fill="url(#accent)"/>
+    <rect x="426" y="311" width="320" height="116" rx="13" fill="#1b2429" stroke="#354751"/>
+    <text x="445" y="340" font-size="15" font-weight="600" fill="#e5eee7">Model capacity</text>
+    <text x="445" y="384" font-size="33" font-weight="700" fill="#86b3ef">86%</text>
+    <text x="526" y="381" font-size="13" fill="#a4b3aa">remaining · resets in 4h 08m</text>
+    <rect x="445" y="402" width="276" height="5" rx="2" fill="#33424b"/>
+    <rect x="445" y="402" width="237" height="5" rx="2" fill="#86b3ef"/>
+    <rect x="768" y="281" width="420" height="235" rx="13" fill="#1b2222" stroke="#3c4745"/>
+    <text x="792" y="314" font-size="17" font-weight="600" fill="#e5eee7">One shared library</text>
+    <text x="792" y="351" font-size="14" fill="#b3c1b8">MCP servers</text><circle cx="1144" cy="346" r="4" fill="#8ae0b3"/>
+    <line x1="792" y1="368" x2="1164" y2="368" stroke="#35413b"/>
+    <text x="792" y="394" font-size="14" fill="#b3c1b8">Skills and instructions</text><circle cx="1144" cy="389" r="4" fill="#8ae0b3"/>
+    <line x1="792" y1="411" x2="1164" y2="411" stroke="#35413b"/>
+    <text x="792" y="437" font-size="14" fill="#b3c1b8">Optional endpoints</text><circle cx="1144" cy="432" r="4" fill="#86b3ef"/>
+    <rect x="791" y="463" width="374" height="31" rx="7" fill="#8ae0b3" opacity=".09"/>
+    <text x="978" y="484" text-anchor="middle" font-size="12" fill="#8ae0b3">Encrypted sharing · explicit account selection</text>
+    <text x="92" y="470" font-size="15" font-weight="600" fill="#d4e1d8">Capacity. History. Connections.</text>
+    <text x="92" y="499" font-size="14" fill="#92a699">Windows + macOS · Native desktop · Open source</text>
+  </g>
+</svg>

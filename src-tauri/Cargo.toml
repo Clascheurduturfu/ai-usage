@@ -1,0 +1,47 @@
+[package]
+name = "ai-usage"
+version = "1.0.0"
+description = "AI Usage and agent endpoint manager"
+edition = "2021"
+default-run = "ai-usage"
+
+[[bin]]
+name = "ai-usage"
+path = "src/main.rs"
+
+[[bin]]
+name = "aiu-mcp"
+path = "src/mcp_native.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Memory", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_Storage_Packaging_Appx"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "=3.5.1"
+aes-gcm = "0.10.3"
+plist = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+opt-level = "s"

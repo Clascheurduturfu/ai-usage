@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- AI sparkle -->
+    <path
+        android:fillColor="#34D399"
+        android:pathData="M54,24 C57.2,45.5 62.5,50.8 84,54 C62.5,57.2 57.2,62.5 54,84 C50.8,62.5 45.5,57.2 24,54 C45.5,50.8 50.8,45.5 54,24 Z" />
+</vector>

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Usage",
+  "version": "1.0.0",
+  "identifier": "io.github.clascheurduturfu.aiusage",
+  "build": {
+    "beforeDevCommand": "npm run build:broker && npm run dev:ui",
+    "devUrl": "http://127.0.0.1:5179",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../out/frontend"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/aiu-node",
+      "binaries/aiu-mcp"
+    ],
+    "resources": {
+      "../out/backend/": "backend/",
+      "../resources/": "assets/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
