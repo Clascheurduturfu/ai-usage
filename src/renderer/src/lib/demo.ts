@@ -60,7 +60,7 @@ function demoUpdateApi(): Partial<AiuApi> {
   let status: UpdateStatus = { channel: 'stable', autoCheck: true, installed: APP_VERSION, repository: 'sample/repo', releasesUrl: 'https://github.com', state: 'idle', installKind: 'installer' }
   const set = (patch: Partial<UpdateStatus>): UpdateStatus => { status = { ...status, ...patch }; listeners.forEach(cb => cb()); return structuredClone(status) }
   const next = (): UpdateStatus['available'] => status.channel === 'preview'
-    ? { version: '1.0.0-rc.3', name: 'AI Usage 1.0.0 RC 3', notes: 'Sample preview notes.\n- Command palette\n- In-app updates', url: 'https://github.com', prerelease: true, publishedAt: new Date().toISOString(), size: 48_200_000 }
+    ? { version: '1.0.0-rc.4', name: 'AI Usage 1.0.0 RC 4', notes: 'Sample preview notes.\n- Command palette\n- In-app updates', url: 'https://github.com', prerelease: true, publishedAt: new Date().toISOString(), size: 48_200_000 }
     : undefined
   return {
     onUpdateStatus: cb => { listeners.add(cb); return () => listeners.delete(cb) },

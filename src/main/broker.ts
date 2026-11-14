@@ -29,7 +29,9 @@ const native = (method: string, value: string): Promise<string> => new Promise((
 const db = openDb(appDbPath()), offline = process.env.AIU_OFFLINE === '1'
 const scanner = new Scanner(db, () => getSettings(db), () => event('data:updated'))
 const updater = new Updater({ installed: APP_VERSION, dataDir: userDataPath(), prefs: { read: () => kvGet<UpdatePrefs>(db, 'update.prefs') ?? null, write: prefs => kvSet(db, 'update.prefs', prefs) },
-  notify: () => event('update:updated'), busy: () => manager.activity() })
+  notify: () => event('update:updated'), busy: () => manager.activity(),
+  // Packaged Windows app: the broker runs on aiu-node.exe next to the relay it must move aside.
+  installDir: process.platform === 'win32' && /^aiu-node/i.test(path.basename(process.execPath)) ? path.dirname(process.execPath) : undefined })
 const quota = offline ? null : startQuotaService(db, APP_VERSION, () => event('data:updated'))
 const pool = process.env.AIU_POOL || path.join(os.homedir(), '.agents')
 const manager = new ManagerService(pool, userDataPath(), process.env.AIU_HOME || os.homedir(), native, () => event('manager:updated'))

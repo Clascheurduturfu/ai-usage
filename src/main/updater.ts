@@ -109,6 +109,34 @@ export interface UpdaterOptions {
   /** Hands the verified package to the platform. Defaults to the real launcher. */
   launch?: (file: string, kind: UpdateStatus['installKind']) => Promise<void>
   now?: () => number
+  /** Windows install folder of the packaged app; its running relays are moved aside before installing. */
+  installDir?: string
+}
+
+/** Relay executables that coding clients keep running while AI Usage itself is closed. */
+const RELAYS = ['aiu-mcp.exe']
+const MOVED_RELAY = /^aiu-mcp\.[0-9a-f]{8}\.old$/
+
+/**
+ * Windows refuses to overwrite a running executable but allows renaming it. Every open coding
+ * client keeps aiu-mcp relays running, so the installer could not replace aiu-mcp.exe. Running
+ * relays keep working from the renamed file; the returned function undoes the move.
+ */
+export async function moveRunningRelays(dir: string): Promise<() => Promise<void>> {
+  const moved: Array<[string, string]> = []
+  for (const name of RELAYS) {
+    const from = path.join(dir, name), to = path.join(dir, `aiu-mcp.${randomUUID().slice(0, 8)}.old`)
+    try { await fs.rename(from, to); moved.push([from, to]) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { await restore(); throw error } }
+  }
+  async function restore() { for (const [from, to] of moved.reverse()) await fs.rename(to, from).catch(() => undefined) }
+  return restore
+}
+
+/** Deletes relays moved aside by earlier installs. One still used by an open client stays until a later launch. */
+export async function removeMovedRelays(dir: string): Promise<void> {
+  const names = await fs.readdir(dir).catch(() => [] as string[])
+  for (const name of names) if (MOVED_RELAY.test(name)) await fs.rm(path.join(dir, name), { force: true }).catch(() => undefined)
 }
 
 export class Updater {
@@ -192,7 +220,10 @@ export class Updater {
     return directory
   }
   /** Removes packages from earlier attempts; the installer has finished by the time the app runs again. */
-  async cleanup(): Promise<void> { await fs.rm(path.join(this.options.dataDir, 'updates'), { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined) }
+  async cleanup(): Promise<void> {
+    await fs.rm(path.join(this.options.dataDir, 'updates'), { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined)
+    if (this.options.installDir) await removeMovedRelays(this.options.installDir)
+  }
   async download(): Promise<UpdateStatus> {
     const selected = this.selected, generation = this.generation
     if (!selected || this.state !== 'available') throw new Error('Check for updates first')
@@ -252,8 +283,14 @@ export class Updater {
     const kind = this.installKind()
     if (kind === 'manual') throw new Error('Install this update from Releases')
     this.set('installing', kind === 'installer' ? 'The installer is closing AI Usage and will open it again.' : 'Drag AI Usage onto Applications in the opened window, then reopen it.')
-    try { await (this.options.launch ?? launchPackage)(file, kind) }
-    catch (error) { this.set('error', `Could not start the installer: ${(error as Error).message}`) }
+    let restore: (() => Promise<void>) | undefined
+    try {
+      if (kind === 'installer' && this.options.installDir) restore = await moveRunningRelays(this.options.installDir)
+      await (this.options.launch ?? launchPackage)(file, kind)
+    } catch (error) {
+      await restore?.()
+      this.set('error', `Could not start the installer: ${(error as Error).message}`)
+    }
     if (kind === 'disk-image') this.set('ready', 'Disk image opened. Replace AI Usage in Applications, then reopen it.')
     return this.status()
   }

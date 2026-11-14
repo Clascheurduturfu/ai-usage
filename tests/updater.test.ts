@@ -58,14 +58,15 @@ describe('release selection', () => {
 })
 
 type Route = (url: string, init?: RequestInit) => Response | Promise<Response>
-async function harness(routes: Route, options: { installed?: string; busy?: string; platform?: string } = {}) {
+async function harness(routes: Route, options: { installed?: string; busy?: string; platform?: string; installDir?: string; launchFails?: boolean } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aiu-update-'))
   let prefs: UpdatePrefs | null = null
   const launched: string[] = []
   const updater = new Updater({ installed: options.installed ?? '1.0.2', dataDir, platform: options.platform ?? 'win32', arch: 'x64', repository: 'o/r',
     prefs: { read: () => prefs, write: p => { prefs = { ...p } } }, notify: () => undefined, busy: () => options.busy ?? null,
     fetch: (async (input: string | URL, init?: RequestInit) => routes(String(input), init)) as typeof fetch,
-    launch: async file => { launched.push(file) } })
+    installDir: options.installDir,
+    launch: async file => { if (options.launchFails) throw new Error('denied'); launched.push(file) } })
   return { updater, dataDir, launched, prefs: () => prefs }
 }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
@@ -130,6 +131,25 @@ describe('updater flow', () => {
     const result = await updater.check()
     expect(result.state).toBe('error'); expect(result.message).toMatch(/rate limit/)
     expect(prefs()?.channel).toBe('preview')
+  })
+  it('moves the running relay aside so the installer can replace it, and undoes that if the launch fails', async () => {
+    const r = release('v1.0.3', false)
+    const routes: Route = url => url.includes('per_page') ? json([r]) : url.endsWith(`/releases/${r.id}`) ? json(r) : new Response(bytes)
+    const installDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aiu-install-'))
+    await fs.writeFile(path.join(installDir, 'aiu-mcp.exe'), 'relay')
+    const failing = await harness(routes, { installDir, launchFails: true })
+    await failing.updater.check(); await failing.updater.download()
+    expect((await failing.updater.install()).state).toBe('error')
+    expect(await fs.readdir(installDir)).toEqual(['aiu-mcp.exe'])
+    const { updater, launched } = await harness(routes, { installDir })
+    await updater.check(); await updater.download()
+    expect((await updater.install()).state).toBe('installing'); expect(launched).toHaveLength(1)
+    const [moved] = await fs.readdir(installDir)
+    expect(moved).toMatch(/^aiu-mcp\.[0-9a-f]{8}\.old$/)
+    expect(await fs.readFile(path.join(installDir, moved), 'utf8')).toBe('relay')
+    await fs.writeFile(path.join(installDir, 'aiu-mcp.exe'), 'new relay')
+    await updater.cleanup()
+    expect(await fs.readdir(installDir)).toEqual(['aiu-mcp.exe'])
   })
   it('checks at launch at most once a day', async () => {
     let calls = 0
