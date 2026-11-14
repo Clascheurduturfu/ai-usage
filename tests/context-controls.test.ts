@@ -12,7 +12,9 @@ import type { LocalRuntime } from '../src/main/manager/local-runtime'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }) })
-const temp = async (): Promise<string> => { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aiu-context-')); roots.push(root); return root }
+// macOS limits Unix socket paths to 104 bytes and its per-user temp folder is long; the broker socket lives under the pool.
+const tempBase = process.platform === 'win32' ? os.tmpdir() : '/tmp'
+const temp = async (): Promise<string> => { const root = await fs.mkdtemp(path.join(tempBase, 'aiu-ctx-')); roots.push(root); return root }
 
 const TOOLS = Array.from({ length: 40 }, (_, i) => ({ name: i === 7 ? 'decompile_function' : `tool_${i}`, description: i === 7 ? 'Decompile one native function to pseudo-code' : `Fixture tool number ${i}`, inputSchema: { type: 'object', properties: { address: { type: 'string', description: 'x'.repeat(200) } } }, outputSchema: { type: 'object', description: 'y'.repeat(800) } }))
 const VISIBLE = Buffer.byteLength(JSON.stringify(TOOLS.map(({ outputSchema: _o, ...t }) => t)))
