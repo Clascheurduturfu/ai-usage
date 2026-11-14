@@ -108,13 +108,21 @@ export class ManagerStore {
     return Object.entries(await this.mcpRaw()).map(([name, s]) => ({ name, transport: s.command ? 'stdio' : 'http', command: s.command,
       args: s.args, url: s.url, env: s.env, headers: s.headers, aiUsage: s.aiUsage }))
   }
+  /** Active skills, read by every client that scans the shared folder. */
+  get skillRoot(): string { return path.join(this.pool, 'skills') }
+  /** Globally disabled skills live beside the shared folder, where no client looks. */
+  get parkedSkillRoot(): string { return path.join(this.pool, 'skills-disabled') }
   async skills(): Promise<SkillInfo[]> {
-    const root = path.join(this.pool, 'skills')
+    const result: SkillInfo[] = [], seen = new Set<string>()
+    for (const root of [this.skillRoot, this.parkedSkillRoot]) await this.readSkills(root, result, seen)
+    return result.sort((a, b) => a.name.localeCompare(b.name))
+  }
+  private async readSkills(root: string, result: SkillInfo[], seen: Set<string>): Promise<void> {
     let dirs: import('node:fs').Dirent[]
-    try { dirs = await fs.readdir(root, { withFileTypes: true }) } catch { return [] }
-    const result: SkillInfo[] = []
+    try { dirs = await fs.readdir(root, { withFileTypes: true }) } catch { return }
     for (const dir of dirs) {
-      if (!dir.isDirectory() || dir.name.startsWith('.')) continue
+      if (!dir.isDirectory() || dir.name.startsWith('.') || seen.has(dir.name)) continue
+      seen.add(dir.name)
       const file = path.join(root, dir.name, 'SKILL.md')
       const text = await readText(file)
       if (text === null) continue
@@ -125,15 +133,36 @@ export class ManagerStore {
           valid: !!meta?.name && !!meta?.description, issue: meta?.name && meta?.description ? undefined : 'Missing name or description' })
       } catch { result.push({ name: dir.name, description: '', path: file, valid: false, issue: 'Invalid YAML frontmatter' }) }
     }
-    return result.sort((a, b) => a.name.localeCompare(b.name))
   }
   async skillPath(name: string): Promise<string> {
     validatePathComponent(name)
-    const root = path.join(this.pool, 'skills')
+    const parked = path.join(this.parkedSkillRoot, name)
+    const root = !await exists(path.join(this.skillRoot, name)) && await exists(parked) ? this.parkedSkillRoot : this.skillRoot
     const file = path.join(root, name, 'SKILL.md')
     const realRoot = await fs.realpath(root)
     const realParent = await fs.realpath(path.dirname(file))
     if (!realParent.startsWith(realRoot + path.sep)) throw new Error('Skill is outside the managed library')
     return file
   }
+  /**
+   * Moves skill folders so the shared folder holds exactly the enabled skills.
+   * Linked folders and names present in both places are left alone and reported.
+   */
+  async placeSkills(disabled: readonly string[]): Promise<string[]> {
+    const warnings: string[] = [], off = new Set(disabled)
+    const move = async (name: string, from: string, to: string): Promise<void> => {
+      const source = path.join(from, name), target = path.join(to, name)
+      const stat = await fs.lstat(source).catch(() => null)
+      if (!stat?.isDirectory() || stat.isSymbolicLink()) return
+      if (await exists(target)) { warnings.push(`Skill ${name} exists in both ${path.basename(from)} and ${path.basename(to)}; remove one copy`); return }
+      await fs.mkdir(to, { recursive: true })
+      try { await fs.rename(source, target) } catch (error) { warnings.push(`Skill ${name} could not be moved: ${(error as Error).message}`) }
+    }
+    const names = async (root: string): Promise<string[]> => (await fs.readdir(root, { withFileTypes: true }).catch(() => [])).filter(d => d.isDirectory() && !d.name.startsWith('.')).map(d => d.name)
+    for (const name of await names(this.skillRoot)) if (off.has(name)) await move(name, this.skillRoot, this.parkedSkillRoot)
+    for (const name of await names(this.parkedSkillRoot)) if (!off.has(name)) await move(name, this.parkedSkillRoot, this.skillRoot)
+    return warnings
+  }
 }
+
+const exists = (file: string): Promise<boolean> => fs.lstat(file).then(() => true, () => false)

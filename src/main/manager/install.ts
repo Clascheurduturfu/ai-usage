@@ -67,8 +67,8 @@ export class LibraryInstaller {
     if (!ticket || Date.now() - ticket.created > 15 * 60_000) throw new Error('Installation preview expired')
     const { preview } = ticket
     if (preview.kind === 'skill') {
-      const root = path.join(this.store.pool, 'skills', preview.name)
-      if (await readText(path.join(root, 'SKILL.md')) !== null) throw new Error('This skill already exists; remove or rename it before installing')
+      const root = path.join(this.store.skillRoot, preview.name)
+      if (await readText(path.join(root, 'SKILL.md')) !== null || await readText(path.join(this.store.parkedSkillRoot, preview.name, 'SKILL.md')) !== null) throw new Error('This skill already exists; remove or rename it before installing')
       await fs.mkdir(root, { recursive: true })
       const realParent = await fs.realpath(path.dirname(root)), realRoot = await fs.realpath(root)
       if (path.dirname(realRoot) !== realParent) throw new Error('Cannot install into a linked directory')

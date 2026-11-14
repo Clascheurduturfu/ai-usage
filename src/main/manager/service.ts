@@ -10,6 +10,7 @@ import { McpAuthBroker, ipcPath } from './auth-broker'
 import { McpPreparation } from './mcp-preparation'
 import { NativeSupervisor } from './native-supervisor'
 import { LocalRuntime } from './local-runtime'
+import { McpMetricsStore } from './mcp-metrics'
 import { WorkspaceAdapter } from './workspace'
 import { EndpointEngine, redact } from '../../../proxies/endpoints'
 import { ProxySupervisor } from '../../../proxies/server'
@@ -30,6 +31,7 @@ export class ManagerService {
   readonly workspace: WorkspaceAdapter
   readonly supervisor: NativeSupervisor
   readonly localRuntime: LocalRuntime
+  readonly metrics: McpMetricsStore
   private runtimeTimer?: NodeJS.Timeout
   private logs: string[] = []
   private lastSync?: SyncResult
@@ -48,13 +50,15 @@ export class ManagerService {
     this.installer = new LibraryInstaller(this.store)
     this.supervisor = new NativeSupervisor(data, native, notify, pool)
     this.localRuntime = new LocalRuntime(this.supervisor, notify)
-    this.auth = new McpAuthBroker(this.store, this.vault, native, notify, (name, spec) => this.preparation.resolve(name, spec), this.localRuntime)
+    this.metrics = new McpMetricsStore(data)
+    this.auth = new McpAuthBroker(this.store, this.vault, native, notify, (name, spec) => this.preparation.resolve(name, spec), this.localRuntime, this.metrics)
     this.preparation = new McpPreparation(this.store, home, this.supervisor)
+    this.preparation.onTools = (name, tools) => this.metrics.recordTools(name, tools)
     this.workspace = new WorkspaceAdapter(this.store, this.vault, () => this.preparation.workspaceRunner(), native, notify, (method, params) => this.dispatch(method, params), this.supervisor)
   }
   log(message: string): void { this.logs.push(`${new Date().toISOString()} ${this.vault.redact(redact(message))}`); this.logs = this.logs.slice(-100) }
   async start(): Promise<void> {
-    await this.store.load(); await this.vault.load(); await this.sharing.load()
+    await this.store.load(); await this.vault.load(); await this.sharing.load(); await this.metrics.load()
     await this.auth.start((method, params) => this.dispatch(method, params))
     await this.supervisor.start()
     this.runtimeTimer = setInterval(() => { void this.supervisor.refresh().then(() => { for (const name of this.supervisor.status.paused) this.auth.stopSessions(name) }).catch(e => this.log(e.message)) }, 5000)
@@ -87,14 +91,18 @@ export class ManagerService {
     const running = this.auth.running(), deviceMcp = await this.preparation.statuses()
     for (const [name, status] of Object.entries(running)) if (deviceMcp[name]) deviceMcp[name] = { ...status, canPrepare: deviceMcp[name].canPrepare }
     for (const name of this.supervisor.status.paused) { if (deviceMcp[name]) deviceMcp[name] = { ...deviceMcp[name], state: 'Paused', detail: 'Stopped on this device. Resume allows launch on next use.' } }
-    return { runtime: { ...this.supervisor.status, sessions: this.localRuntime.status() }, config: this.store.config, agents: await this.sync.agents(), skills: await this.store.skills(), mcp, proxies: this.proxies.status(this.store.config.proxies), sharing: this.sharing.status(), lastSync: this.lastSync, secrets: this.vault.refs(), logs: this.logs, instructions: await readText(path.join(this.store.pool, 'AGENTS.md')) ?? '', auth, remoteMcp: { ...this.auth.probes, ...running }, appliedProfiles, instructionSource: path.join(this.store.pool, 'AGENTS.md'), deviceMcp, antigravity: await this.sync.antigravityStatus(), workspace: this.workspace.status(), install: { sandboxed: process.env.AIU_SANDBOXED_INSTALL === '1', path: process.env.AIU_HOST_EXE } }
+    return { runtime: { ...this.supervisor.status, sessions: this.localRuntime.status() }, config: this.store.config, agents: await this.sync.agents(), skills: await this.store.skills(), mcp, proxies: this.proxies.status(this.store.config.proxies), sharing: this.sharing.status(), lastSync: this.lastSync, secrets: this.vault.refs(), logs: this.logs, instructions: await readText(path.join(this.store.pool, 'AGENTS.md')) ?? '', auth, remoteMcp: { ...this.auth.probes, ...running }, appliedProfiles, instructionSource: path.join(this.store.pool, 'AGENTS.md'), deviceMcp, antigravity: await this.sync.antigravityStatus(), workspace: this.workspace.status(), install: { sandboxed: process.env.AIU_SANDBOXED_INSTALL === '1', path: process.env.AIU_HOST_EXE }, mcpMetrics: this.metrics.snapshot() }
   }
   dispatch(method: string, params: any): Promise<any> {
     // Serialize configuration changes and cloud imports so rotating credentials and backup state cannot race.
     const readOnly = ['manager:get', 'endpoint:test', 'endpoint:chat', 'migration:preview', 'skill:read', 'sharing:settings', 'sharing:exists', 'mcp:localLaunchGet', 'workspace:rpc', 'workspace:disconnect', 'mcp:pause', 'mcp:resume', 'mcp:runtimeRefresh'].includes(method)
     if (readOnly) return this.handle(method, params)
-    const task = this.queue.then(() => this.handle(method, params)); this.queue = task.catch(() => undefined); return task
+    this.pending++
+    const task = this.queue.then(() => this.handle(method, params)).finally(() => { this.pending-- }); this.queue = task.catch(() => undefined); return task
   }
+  private pending = 0
+  /** Names queued library work an app update must not interrupt (sync, import, publish). */
+  activity(): string | null { return this.pending ? 'the shared library change in progress' : null }
   private endpoint(id: string): EndpointRecord { const endpoint = this.store.config.endpoints.find(e => e.id === id); if (!endpoint) throw new Error('Endpoint not found'); return endpoint }
   private proxy(id: string): ProxyRecord { const proxy = this.store.config.proxies.find(p => p.id === id); if (!proxy) throw new Error('Proxy not found'); return proxy }
   private async changed(sync = false): Promise<void> { await this.store.save(); if (sync && this.store.config.autoSync) await this.recordSync(await this.sync.sync()); this.notify() }
@@ -142,7 +150,7 @@ export class ManagerService {
         for (const route of proxy.routes) { if (!route.alias?.trim() || !route.model?.trim() || aliases.has(route.alias)) throw new Error('Routes need unique aliases and a model'); aliases.add(route.alias); this.endpoint(route.endpointId); for (const limit of [route.rpm, route.tpm]) if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) throw new Error('Rate limits must be positive') }
         if (this.store.config.proxies.some(old => old.id !== proxy.id && old.port === proxy.port)) throw new Error('Another saved proxy uses this port')
         if (proxy.authMode === 'none') proxy.clientSecretRef = ''
-        else { proxy.authMode = 'key'; if (p.clientSecret !== undefined) { if (!p.clientSecret.length) throw new Error('Choose No key to disable authentication'); proxy.clientSecretRef = 'proxy-' + proxy.id; await this.vault.set(proxy.clientSecretRef, p.clientSecret) }; validateName(proxy.clientSecretRef) }
+        else { proxy.authMode = 'key'; if (p.clientSecret !== undefined) { if (!p.clientSecret.length) throw new Error('Choose No key to disable authentication'); proxy.clientSecretRef = 'proxy-' + proxy.id; await this.vault.set(proxy.clientSecretRef, p.clientSecret) }; validateName(proxy.clientSecretRef ?? '') }
         await this.proxies.stop(proxy.id)
         const index = this.store.config.proxies.findIndex(old => old.id === proxy.id)
         if (index < 0) this.store.config.proxies.push(proxy); else this.store.config.proxies[index] = proxy
@@ -171,6 +179,18 @@ export class ManagerService {
         await this.changed(true); return
       }
       case 'manager:autoSync': this.store.config.autoSync = !!p; await this.changed(); return
+      case 'mcp:setEnabled': case 'mcp:setCompact': case 'skill:setEnabled': {
+        const known = method === 'skill:setEnabled' ? (await this.store.skills()).map(s => s.name) : Object.keys(await this.store.mcpRaw())
+        if (typeof p?.name !== 'string' || !known.includes(p.name)) throw new Error('Unknown library entry')
+        const key = method === 'mcp:setEnabled' ? 'disabledMcp' : method === 'mcp:setCompact' ? 'compactMcp' : 'disabledSkills'
+        // Enabled toggles store the exception (disabled); compact stores the opt-in.
+        const listed = method === 'mcp:setCompact' ? !!p.enabled : !p.enabled
+        const values = new Set(this.store.config[key] ?? []); if (listed) values.add(p.name); else values.delete(p.name)
+        this.store.config[key] = [...values].sort()
+        await this.changed(); return this.recordSync(await this.sync.sync())
+      }
+      case 'manager:contextBudget': { const value = Number(p); if (!Number.isFinite(value) || value < 1000 || value > 2_000_000) throw new Error('Choose a budget between 1,000 and 2,000,000 tokens'); this.store.config.contextBudget = Math.round(value); await this.changed(); return }
+      case 'mcp:resetCalls': this.metrics.resetCalls(typeof p === 'string' ? p : undefined); this.notify(); return
       case 'manager:notifications': this.store.config.syncNotifications = !!p; await this.changed(); return
       case 'profile:activate': { const profile = this.store.config.profiles.find(profile => profile.id === p); if (!profile) throw new Error('Profile not found'); this.store.config.activeProfiles[profile.agentId] = p; await this.changed(); return this.recordSync(await this.sync.sync()) }
       case 'profile:standard': {
@@ -229,6 +249,8 @@ export class ManagerService {
           delete master[oldName]
           if (this.store.config.mcpAuth?.[oldName]) { this.store.config.mcpAuth[server.name] = this.store.config.mcpAuth[oldName]; delete this.store.config.mcpAuth[oldName] }
           for (const profile of this.store.config.profiles) profile.mcpNames = profile.mcpNames.map(name => name === oldName ? server.name : name)
+          for (const key of ['disabledMcp', 'compactMcp'] as const) if (this.store.config[key]) this.store.config[key] = this.store.config[key]!.map(name => name === oldName ? server.name : name)
+          this.metrics.rename(oldName, server.name)
           if (entry.command) await this.preparation.renameOverride(oldName, server.name, entry)
           if (this.supervisor.paused(oldName)) { await this.supervisor.control('resume', oldName); await this.localRuntime.stop(server.name) }
           this.auth.stopSessions(oldName)
@@ -243,7 +265,7 @@ export class ManagerService {
           this.notify(); return { warnings, sync }
         } finally { this.suppressWatchUntil = Date.now() + 1500 }
       }
-      case 'mcp:delete': { validateName(p); const master = await this.store.mcpRaw(); delete master[p]; const ref = this.store.config.mcpAuth?.[p]?.secretRef; if (this.store.config.mcpAuth) delete this.store.config.mcpAuth[p]; if (ref) await this.vault.delete(ref); for (const profile of this.store.config.profiles) profile.mcpNames = profile.mcpNames.filter(name => name !== p); await this.store.save(); await atomicWrite(path.join(this.store.pool, 'mcp.json'), JSON.stringify({ mcpServers: master }, null, 2)); this.notify(); return }
+      case 'mcp:delete': { validateName(p); const master = await this.store.mcpRaw(); delete master[p]; const ref = this.store.config.mcpAuth?.[p]?.secretRef; if (this.store.config.mcpAuth) delete this.store.config.mcpAuth[p]; if (ref) await this.vault.delete(ref); for (const profile of this.store.config.profiles) profile.mcpNames = profile.mcpNames.filter(name => name !== p); for (const key of ['disabledMcp', 'compactMcp'] as const) if (this.store.config[key]) this.store.config[key] = this.store.config[key]!.filter(name => name !== p); this.metrics.forget(p); await this.store.save(); await atomicWrite(path.join(this.store.pool, 'mcp.json'), JSON.stringify({ mcpServers: master }, null, 2)); this.notify(); return }
       case 'instructions:save': if (typeof p !== 'string' || p.length > 2_000_000) throw new Error('Instructions are too large'); await atomicWrite(path.join(this.store.pool, 'AGENTS.md'), p); this.notify(); return
       case 'skill:read': return readText(await this.store.skillPath(p))
       case 'skill:save': if (typeof p.text !== 'string' || p.text.length > 2_000_000) throw new Error('Skill text is too large'); await atomicWrite(await this.store.skillPath(p.name), p.text); this.notify(); return
@@ -304,5 +326,5 @@ export class ManagerService {
       default: throw new Error('Unknown manager operation')
     }
   }
-  async close(): Promise<void> { this.watcher?.close(); if (this.timer) clearTimeout(this.timer); if (this.shareTimer) clearInterval(this.shareTimer); this.workspace.close(); if (this.runtimeTimer) clearInterval(this.runtimeTimer); await this.auth.close(); await this.supervisor.close(); await this.queue; await this.proxies.stopAll(); this.sharing.clear(); this.vault.clear() }
+  async close(): Promise<void> { this.watcher?.close(); if (this.timer) clearTimeout(this.timer); if (this.shareTimer) clearInterval(this.shareTimer); this.workspace.close(); if (this.runtimeTimer) clearInterval(this.runtimeTimer); await this.auth.close(); await this.supervisor.close(); await this.metrics.flush(); await this.queue; await this.proxies.stopAll(); this.sharing.clear(); this.vault.clear() }
 }

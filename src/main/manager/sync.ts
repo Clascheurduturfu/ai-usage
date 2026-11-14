@@ -3,7 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { parse as parseJson, modify, applyEdits } from 'jsonc-parser'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import type { AgentId, AgentInfo, AgentProfile, AntigravityStatus, SyncPreview, SyncResult } from '../../shared/manager'
+import { COMPACT_SUFFIX, LAZY_TOOL_AGENTS, type AgentId, type AgentInfo, type AgentProfile, type AntigravityStatus, type SyncPreview, type SyncResult } from '../../shared/manager'
 import { ManagerStore, atomicWrite, hash, readText, validatePathComponent } from './storage'
 import { renderCodexToml, renderGeminiServers } from './vendor/renderers'
 import { McpPreparation } from './mcp-preparation'
@@ -36,7 +36,8 @@ export class SyncEngine {
     if (!live) return undefined
     const raw = await this.store.mcpRaw(), names = Object.keys(raw)
     const profile = this.store.config.profiles.find(p => p.id === this.store.config.activeProfiles.antigravity)
-    const selected = names.filter(name => !profile || profile.mcpNames.includes(name))
+    const off = new Set(this.store.config.disabledMcp ?? [])
+    const selected = names.filter(name => !off.has(name) && (!profile || profile.mcpNames.includes(name)))
     const configured = parseJson(await readText(path.join(this.home, '.gemini/config/mcp_config.json')) ?? '{}')?.mcpServers ?? {}
     const device = await new McpPreparation(this.store, this.home).statuses()
     const reported = new Map(live.servers.map(server => [server.name, server]))
@@ -46,7 +47,7 @@ export class SyncEngine {
       if (configured[name].disabled) return { name, state: 'Disabled', tools: 0, detail: 'Disabled in Antigravity. Sync agents to enable selected shared servers.' }
       return reported.get(name) ?? { name, state: 'Not loaded', tools: 0, detail: 'Configured but not reported by the client. Reload Antigravity, or start a fresh chat.' }
     })
-    const excluded = names.filter(name => !selected.includes(name)).map(name => ({ name, state: 'Not selected', tools: 0, detail: 'Excluded by the active Antigravity profile. Use the standard shared profile to include it.' }))
+    const excluded = names.filter(name => !selected.includes(name)).map(name => off.has(name) ? { name, state: 'Disabled', tools: 0, detail: 'Disabled for every agent in AI Usage → Shared library.' } : { name, state: 'Not selected', tools: 0, detail: 'Excluded by the active Antigravity profile. Use the standard shared profile to include it.' })
     return { ...live, expected: selected.length, libraryCount: names.length, servers: [...servers, ...excluded, ...live.servers.filter(server => !names.includes(server.name))] }
   }
   async agents(): Promise<AgentInfo[]> {
@@ -87,9 +88,11 @@ export class SyncEngine {
       skillOverrides: select(doc.skillOverrides, skills), disabled: (doc.skills?.disabled ?? []).filter((n: string) => skills.has(n)).sort(),
       skillConfig: (doc.skills?.config ?? []).filter((v: any) => String(v.path ?? '').startsWith(root)), permission: select(doc.permission?.skill, skills) })
   }
-  private async materializeSkills(disabled: string[], ledger: Ledger, files: FileChange[], warnings: string[], relative = '.gemini/config/skills'): Promise<void> {
-    const sourceRoot = path.join(this.store.pool, 'skills'), targetRoot = path.join(this.home, relative), wanted = new Set<string>()
-    if ((await fs.lstat(targetRoot).catch(() => null))?.isSymbolicLink()) { warnings.push('Antigravity: global skill directory is linked; kept its existing link unchanged'); return }
+  private async materializeSkills(disabled: string[], ledger: Ledger, files: FileChange[], warnings: string[], relative = '.gemini/config/skills', client = 'Antigravity'): Promise<void> {
+    // A skill may still sit in the disabled folder until apply moves it: map each from its own root.
+    let sourceRoot = this.store.skillRoot
+    const targetRoot = path.join(this.home, relative), wanted = new Set<string>()
+    if ((await fs.lstat(targetRoot).catch(() => null))?.isSymbolicLink()) { warnings.push(`${client}: global skill directory is linked; kept its existing link unchanged`); return }
     let total = 0
     const walk = async (directory: string): Promise<void> => {
       for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
@@ -98,12 +101,12 @@ export class SyncEngine {
         const source = path.join(directory, entry.name), target = path.join(targetRoot, path.relative(sourceRoot, source))
         let parent = target, linked = false
         while (parent !== targetRoot) { if ((await fs.lstat(parent).catch(() => null))?.isSymbolicLink()) { linked = true; break }; parent = path.dirname(parent) }
-        if (linked) { warnings.push(`Antigravity: preserved linked skill path ${target}`); continue }
+        if (linked) { warnings.push(`${client}: preserved linked skill path ${target}`); continue }
         if (entry.isDirectory()) await walk(source)
         else if (entry.isFile()) {
           const bytes = await fs.readFile(source); total += bytes.length
-          if (bytes.length > 8 * 1024 * 1024 || total > 64 * 1024 * 1024) throw new Error('Antigravity skill sync exceeds 64 MiB or 8 MiB per file')
-          const change: FileChange = { file: target, before: null, after: bytes.toString('base64'), encoding: 'base64', target: 'Antigravity skills' }
+          if (bytes.length > 8 * 1024 * 1024 || total > 64 * 1024 * 1024) throw new Error(`${client} skill sync exceeds 64 MiB or 8 MiB per file`)
+          const change: FileChange = { file: target, before: null, after: bytes.toString('base64'), encoding: 'base64', target: `${client} skills` }
           change.before = await contents(change); wanted.add(target)
           if (process.platform === 'darwin' && /\.(sh|command)$/.test(entry.name)) {
             const targetStat = await fs.stat(target).catch(() => null)
@@ -116,9 +119,9 @@ export class SyncEngine {
         }
       }
     }
-    for (const skill of (await this.store.skills()).filter(s => s.valid && !disabled.includes(s.name))) await walk(path.dirname(skill.path))
+    for (const skill of (await this.store.skills()).filter(s => s.valid && !disabled.includes(s.name))) { sourceRoot = path.dirname(path.dirname(skill.path)); await walk(path.dirname(skill.path)) }
     for (const file of Object.keys(ledger.hashes).filter(file => file.startsWith(targetRoot + path.sep) && !wanted.has(file))) {
-      const change: FileChange = { file, before: null, after: null, encoding: 'base64', target: 'Antigravity skills' }; change.before = await contents(change)
+      const change: FileChange = { file, before: null, after: null, encoding: 'base64', target: `${client} skills` }; change.before = await contents(change)
       if (change.before !== null) files.push(change)
     }
   }
@@ -146,7 +149,9 @@ export class SyncEngine {
   async preview(): Promise<SyncPreview> {
     const raw = await this.store.mcpRaw(), names = Object.keys(raw), master: Record<string, any> = {}, setupWarnings: string[] = []
     const preparation = new McpPreparation(this.store, this.home)
+    const disabledMcp = new Set(this.store.config.disabledMcp ?? []), compactMcp = new Set(this.store.config.compactMcp ?? [])
     for (const [name, spec] of Object.entries(raw)) {
+      if (disabledMcp.has(name)) continue
       try { const resolved = await preparation.resolve(name, spec); if (resolved) master[name] = resolved; else setupWarnings.push(`${name}: needs local setup; omitted from client launch configuration until prepared`) }
       catch { setupWarnings.push(`${name}: invalid local launch or installation metadata; omitted until reviewed`) }
     }
@@ -167,14 +172,22 @@ export class SyncEngine {
     }
     for (const agent of agents.filter(a => a.installed)) {
       const profile = this.store.config.profiles.find(p => p.id === this.store.config.activeProfiles[agent.id])
+      // Globally disabled skills are off for every agent, on top of the profile's own exclusions.
+      const skillsOff = [...new Set([...(this.store.config.disabledSkills ?? []), ...(profile?.disabledSkills ?? [])])]
+      // Global disables are enforced by moving the folder; only profile exclusions need client support.
+      const profileOff = (profile?.disabledSkills ?? []).filter(name => !(this.store.config.disabledSkills ?? []).includes(name))
       // Skills and rules remain usable even when the client's MCP JSON needs repair.
+      // Claude Code reads ~/.claude/skills, not the shared folder: give it its own copy.
+      if (agent.id === 'claude') await this.materializeSkills(skillsOff, ledger, files, warnings, '.claude/skills', 'Claude Code')
       if (agent.id === 'antigravity') {
-        await this.materializeSkills(profile?.disabledSkills ?? [], ledger, files, warnings)
-        if (process.platform === 'darwin' && await fs.access(path.join(this.home, '.gemini/antigravity-cli')).then(() => true, () => false)) await this.materializeSkills(profile?.disabledSkills ?? [], ledger, files, warnings, '.gemini/antigravity-cli/skills')
+        await this.materializeSkills(skillsOff, ledger, files, warnings)
+        if (process.platform === 'darwin' && await fs.access(path.join(this.home, '.gemini/antigravity-cli')).then(() => true, () => false)) await this.materializeSkills(skillsOff, ledger, files, warnings, '.gemini/antigravity-cli/skills')
         await this.antigravityInstructions(profile, files, warnings)
       }
       const selected = profile ? new Set(profile.mcpNames) : new Set(names)
-      const entries = Object.entries(master).filter(([n, s]) => selected.has(n) && (agent.id !== 'claude-desktop' || s.command))
+      // Compact relays replace a large tool list with search + call for clients that load every schema eagerly.
+      const compactFor = (name: string, s: any): any => compactMcp.has(name) && !LAZY_TOOL_AGENTS.includes(agent.id) && Array.isArray(s.args) && s.args.includes('--relay') ? { ...s, args: s.args.map((a: string) => a === name ? name + COMPACT_SUFFIX : a) } : s
+      const entries = Object.entries(master).filter(([n, s]) => selected.has(n) && (agent.id !== 'claude-desktop' || s.command)).map(([n, s]) => [n, compactFor(n, s)] as [string, any])
       const text = (await readText(agent.configPath))?.replace(/^\uFEFF/, '') ?? null
       const errors: import('jsonc-parser').ParseError[] = []
       let doc: any
@@ -209,31 +222,31 @@ export class SyncEngine {
       if (agent.id === 'claude') {
         const settingsFile = path.join(this.home, '.claude/settings.json'), settingsText = await readText(settingsFile) ?? '{}', settings = parseJson(settingsText)
         const overrides = { ...(settings.skillOverrides ?? {}) }
-        for (const skill of await this.store.skills()) { if (profile?.disabledSkills.includes(skill.name)) overrides[skill.name] = 'off'; else if (overrides[skill.name] === 'off') delete overrides[skill.name] }
+        for (const skill of await this.store.skills()) { if (skillsOff.includes(skill.name)) overrides[skill.name] = 'off'; else if (overrides[skill.name] === 'off') delete overrides[skill.name] }
         await add(settingsFile, applyEdits(settingsText, modify(settingsText, ['skillOverrides'], overrides, { formattingOptions: { insertSpaces: true, tabSize: 2 } })).trimEnd() + '\n', 'Claude Code skills')
       }
       let after: string
       if (agent.id === 'codex') {
         doc[section] = servers
-        if (profile || doc.skills?.config) {
+        if (profile || skillsOff.length || doc.skills?.config) {
           const root = path.join(this.store.pool, 'skills') + path.sep
           doc.skills ??= {}
-          doc.skills.config = [...(doc.skills.config ?? []).filter((s: any) => !String(s.path ?? '').startsWith(root)), ...(profile?.disabledSkills ?? []).map(name => ({ path: path.join(root, name, 'SKILL.md'), enabled: false }))]
+          doc.skills.config = [...(doc.skills.config ?? []).filter((s: any) => !String(s.path ?? '').startsWith(root)), ...profileOff.map(name => ({ path: path.join(root, name, 'SKILL.md'), enabled: false }))]
         }
         after = stringifyToml(doc) + '\n'
       } else {
         after = applyEdits(text ?? '{}', modify(text ?? '{}', agent.id === 'zcode' ? ['mcp', 'servers'] : [section], servers, { formattingOptions: { insertSpaces: true, tabSize: 2 } }))
-        if (agent.id === 'gemini' && (profile || doc.skills?.disabled)) { const shared = new Set((await this.store.skills()).map(s => s.name)); after = applyEdits(after, modify(after, ['skills', 'disabled'], [...(doc.skills?.disabled ?? []).filter((name: string) => !shared.has(name)), ...(profile?.disabledSkills ?? [])], { formattingOptions: { insertSpaces: true, tabSize: 2 } })) }
-        if (agent.id === 'opencode' && (profile || doc.permission?.skill)) {
+        if (agent.id === 'gemini' && (profile || skillsOff.length || doc.skills?.disabled)) { const shared = new Set((await this.store.skills()).map(s => s.name)); after = applyEdits(after, modify(after, ['skills', 'disabled'], [...(doc.skills?.disabled ?? []).filter((name: string) => !shared.has(name)), ...skillsOff], { formattingOptions: { insertSpaces: true, tabSize: 2 } })) }
+        if (agent.id === 'opencode' && (profile || skillsOff.length || doc.permission?.skill)) {
           const permission = { ...(doc.permission?.skill ?? {}) }
-          for (const skill of await this.store.skills()) { if (profile?.disabledSkills.includes(skill.name)) permission[skill.name] = 'deny'; else if (permission[skill.name] === 'deny') delete permission[skill.name] }
+          for (const skill of await this.store.skills()) { if (skillsOff.includes(skill.name)) permission[skill.name] = 'deny'; else if (permission[skill.name] === 'deny') delete permission[skill.name] }
           after = applyEdits(after, modify(after, ['permission', 'skill'], permission, { formattingOptions: { insertSpaces: true, tabSize: 2 } }))
         }
         after = after.trimEnd() + '\n'
       }
       await add(agent.configPath, after, agent.name)
       if (agent.id === 'zcode' && profile && !Object.keys(servers).length && names.length) throw new Error('ZCode falls back to the master when its MCP list is empty; an empty MCP profile cannot be enforced')
-      if (profile?.disabledSkills.length && agent.skillControl !== 'native') warnings.push(`${agent.name}: the effective shared skill library includes excluded skills; this client has no verified per-skill control`)
+      if (profileOff.length && agent.skillControl !== 'native') warnings.push(`${agent.name}: this profile's skill exclusions are not enforced; this client reads the whole shared skill folder`)
       if (agent.id === 'claude-desktop' && entries.length < selected.size) warnings.push('Claude Desktop: remote MCP servers require client-managed connectors; only stdio entries are generated')
       const relative = agent.id === 'antigravity' ? undefined : instructions[agent.id]
       if (relative && (!profile || profile.instructions)) {
@@ -260,6 +273,8 @@ export class SyncEngine {
     const conflicts = preview.dto.changes.filter(c => c.conflict && !(replaceInstructions && c.target.endsWith(' instructions'))).map(c => c.path)
     for (const file of preview.files) if (await contents(file) !== file.before || (file.beforeMode !== undefined && ((await fs.stat(file.file)).mode & 0o777) !== file.beforeMode)) conflicts.push(file.file)
     if (conflicts.length) return { changed: 0, conflicts: [...new Set(conflicts)], warnings: ['Files changed outside the manager. Review and adopt their current state before retrying.'] }
+    // Globally disabled skills leave the shared folder, so clients that scan it stop seeing them.
+    preview.dto.warnings.push(...await this.store.placeSkills(this.store.config.disabledSkills ?? []))
     if (!preview.files.length) { this.previews.delete(id); return this.complete({ changed: 0, conflicts: [], warnings: preview.dto.warnings }) }
     const backupId = randomUUID(), backupPath = path.join(this.store.data, 'backups', backupId + '.json')
     await atomicWrite(backupPath, JSON.stringify(preview.files))

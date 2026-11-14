@@ -15,7 +15,9 @@ function csvCell(value: string | number): string {
 export default function HistoryPage(): React.ReactElement {
   const { version, openProvider, runAction, busy } = useApp()
   const [filter, setFilter] = useState<HistoryFilter>({ days: 30, sort: 'recent', offset: 0, limit: 25 })
-  const [search, setSearch] = useState('')
+  // The command palette hands over a query once.
+  const [search, setSearch] = useState(() => { try { return sessionStorage.getItem('aiu:history-search') ?? '' } catch { return '' } })
+  useEffect(() => { try { sessionStorage.removeItem('aiu:history-search') } catch { /* optional hand-off */ } }, [])
   const [data, setData] = useState<HistoryDTO | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

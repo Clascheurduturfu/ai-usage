@@ -7,6 +7,7 @@ import fs from 'node:fs/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { LocalRuntime, type LocalSession } from './local-runtime'
+import { McpMetricsStore, compactNames, compactToolList, parseRelayName, searchTools } from './mcp-metrics'
 import { auth, UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { isPublicMcp } from '../../shared/mcp-auth'
 import { APP_VERSION } from '../../shared/version'
@@ -44,7 +45,7 @@ export class McpAuthBroker {
   private locks = new Map<string, Promise<unknown>>()
   private refreshFailures = new Map<string, { text: string; since: number }>()
   private recordRefreshFailure(name: string, text: string): void { const previous = this.refreshFailures.get(name); this.refreshFailures.set(name, { text, since: previous?.text === text ? previous.since : Date.now() }) }
-  constructor(private store: ManagerStore, private vault: Vault, private native: NativeCall, private notify: () => void, private resolveLocal: (name: string, spec: any) => Promise<any>, readonly localRuntime: LocalRuntime) {}
+  constructor(private store: ManagerStore, private vault: Vault, private native: NativeCall, private notify: () => void, private resolveLocal: (name: string, spec: any) => Promise<any>, readonly localRuntime: LocalRuntime, readonly metrics?: McpMetricsStore) {}
   running(): Record<string, McpDeviceStatus> {
     const counts = new Map<string, { clients: number; tools?: number }>()
     for (const session of this.sessions.values()) { const entry = counts.get(session.name) ?? { clients: 0 }; entry.clients++; entry.tools = session.tools ?? entry.tools; counts.set(session.name, entry) }
@@ -70,7 +71,8 @@ export class McpAuthBroker {
       const transport = new StreamableHTTPClientTransport(new URL(spec.url), { ...(appAuth && !isPublicMcp(spec.url) && !headerAuth ? { authProvider: this.provider(name) } : {}), requestInit: { headers: spec.headers ?? {} }, fetch: this.remoteFetch(name) })
       try {
         await client.connect(transport)
-        const capabilities = client.getServerCapabilities(), count = capabilities?.tools ? (await client.listTools()).tools.length : 0
+        const capabilities = client.getServerCapabilities(), listed = capabilities?.tools ? (await client.listTools()).tools : [], count = listed.length
+        if (capabilities?.tools) this.metrics?.recordTools(name, listed)
         this.probes[name] = { state: 'Connection verified', detail: `${count} tools listed. The temporary check has finished; coding clients launch their own sessions.`, tools: count, checkedAt: Date.now(), canPrepare: false }
         if (appAuth && !isPublicMcp(spec.url) && !headerAuth) this.setStatus(name, 'Signed in')
       } catch (error) {
@@ -241,7 +243,19 @@ export class McpAuthBroker {
       let queued = 0
       let connectionQueue: Promise<unknown> = Promise.resolve()
       const lines = new FrameReader(socket)
-      const reply = (value: any): void => { if (!socket.destroyed) socket.write(JSON.stringify(value) + '\n') }
+      const write = (value: any): void => { if (!socket.destroyed) socket.write(JSON.stringify(value) + '\n') }
+      // Every response to the client passes here: internal compact-mode requests are
+      // answered privately, tool lists are measured, and tool calls are counted.
+      let compact = false, toolCache: any[] | undefined
+      const internal = new Map<string, { resolve(value: any): void }>(), listIds = new Set<string>(), callIds = new Map<string, string>()
+      const reply = (value: any): void => {
+        const key = value && value.id !== undefined && value.id !== null && !value.method ? String(value.id) : undefined
+        if (key && internal.has(key)) { const pending = internal.get(key)!; internal.delete(key); pending.resolve(value); return }
+        if (value?.method === 'notifications/tools/list_changed') toolCache = undefined
+        if (key && listIds.delete(key) && Array.isArray(value.result?.tools) && !value.result.nextCursor && serverName) this.metrics?.recordTools(serverName, value.result.tools)
+        if (key && callIds.has(key)) { const tool = callIds.get(key)!; callIds.delete(key); if (serverName) this.metrics?.recordCall(serverName, tool, !value.error && !value.result?.isError) }
+        write(value)
+      }
       let remoteLost = false
       // Opens (or reopens) this client's upstream session. A failed or dropped upstream
       // never closes the client's socket: the next request reconnects, and errors are
@@ -262,10 +276,35 @@ export class McpAuthBroker {
         next.fallbackNotificationHandler = async notification => { reply(notification) }
         this.clients.add(next); client = next; transport = nextTransport; remoteLost = false
       }
+      const internalRequest = async (request: { method: string; params?: any }): Promise<any> => {
+        if (local) {
+          const id = 'aiu-internal-' + randomUUID()
+          const response = new Promise<any>(resolve => internal.set(id, { resolve }))
+          try { await local.send({ jsonrpc: '2.0', id, ...request }) } catch (error) { internal.delete(id); throw error }
+          const value = await response
+          if (value.error) throw new Error(value.error.message)
+          return value.result
+        }
+        if (remoteLost || (shared && !this.publicClients.has(serverName!))) await openRemote((await this.store.mcpRaw())[serverName!])
+        if (!client) throw new Error('Initialize the MCP first')
+        return client.request({ method: request.method, params: request.params }, z.unknown(), { timeout: 180_000 })
+      }
+      const fullTools = async (): Promise<any[]> => {
+        if (toolCache) return toolCache
+        const all: any[] = []; let cursor: string | undefined
+        for (let page = 0; page < 50; page++) {
+          const result = await internalRequest({ method: 'tools/list', params: cursor ? { cursor } : {} })
+          all.push(...(Array.isArray(result?.tools) ? result.tools : [])); cursor = result?.nextCursor
+          if (!cursor) break
+        }
+        this.metrics?.recordTools(serverName!, all)
+        return toolCache = all
+      }
       lines.on('line', line => {
         if (line.length > 16 * 1024 * 1024) { socket.destroy(); return }
         let frame: any; try { frame = JSON.parse(line) } catch { socket.destroy(); return }
         if (frame.token !== this.token) { socket.destroy(); return }
+        if (typeof frame.server === 'string') { const relay = parseRelayName(frame.server); frame.server = relay.name; if (relay.compact) compact = true }
         const run = async (): Promise<void> => {
           try {
             if (cancelledIds.delete(String(frame.message?.id))) throw new Error('MCP request cancelled')
@@ -276,10 +315,26 @@ export class McpAuthBroker {
               if (result) reply(result); return
             }
             if (!frame.server) { const result = await dispatch(frame.method, frame.params); reply({ id: frame.id, result }); return }
-            const msg = frame.message
+            let msg = frame.message
             if (!msg || msg.jsonrpc !== '2.0') throw new Error('Invalid MCP message')
             if (!serverName) serverName = frame.server
             if (serverName !== frame.server) throw new Error('Cannot change the MCP during a session')
+            if (compact && (local || client || remoteLost) && msg.id !== undefined) {
+              const names = compactNames(serverName!)
+              if (msg.method === 'tools/list') { reply({ jsonrpc: '2.0', id: msg.id, result: compactToolList(serverName!, await fullTools()) }); return }
+              if (msg.method === 'tools/call' && msg.params?.name === names.search) {
+                const found = searchTools(await fullTools(), String(msg.params?.arguments?.query ?? ''), Number(msg.params?.arguments?.limit ?? 6))
+                const text = found.length ? JSON.stringify(found.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))) : `No ${serverName} tool matches. Try other keywords or an exact name from the list in ${names.search}.`
+                reply({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } }); return
+              }
+              if (msg.method === 'tools/call' && msg.params?.name === names.call) {
+                const args = msg.params?.arguments ?? {}
+                if (typeof args.name !== 'string' || !args.name) throw new Error(`Pass the exact tool name found with ${names.search}`)
+                msg = { ...msg, params: { ...msg.params, name: args.name, arguments: args.arguments && typeof args.arguments === 'object' ? args.arguments : {} } }
+              }
+            }
+            if (msg.method === 'tools/list' && msg.id !== undefined && !msg.params?.cursor) listIds.add(String(msg.id))
+            if (msg.method === 'tools/call' && msg.id !== undefined) callIds.set(String(msg.id), String(msg.params?.name ?? ''))
             // Local MCPs keep their complete protocol, including server requests and
             // notifications. One process per client preserves browser/session isolation.
             if (local) { await local.send(msg); return }

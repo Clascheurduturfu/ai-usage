@@ -64,6 +64,8 @@ type Ticket = McpSetupPreview & { masterHash: string }
 
 export class McpPreparation {
   private probes: Record<string, McpDeviceStatus> = {}
+  /** Receives the tool list of each successful connection check (for size metrics). */
+  onTools?: (name: string, tools: Array<{ name: string }>) => void
   private root: string
   constructor(private store: ManagerStore, private home = os.homedir(), private supervisor?: NativeSupervisor) { this.root = path.join(store.data, 'mcp-device') }
   forget(name?: string): void { if (name) delete this.probes[name]; else this.probes = {} }
@@ -344,7 +346,7 @@ export class McpPreparation {
     const client = new Client({ name: 'AI Usage connection check', version: APP_VERSION }, { capabilities: {} })
     let timer: NodeJS.Timeout | undefined, errorText = ''
     try {
-      const operation = (async () => { const connection = client.connect(transport); await connection; const list = await client.listTools(); return list.tools.length })()
+      const operation = (async () => { const connection = client.connect(transport); await connection; const list = await client.listTools(); this.onTools?.(name, list.tools); return list.tools.length })()
       const count = await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Connection timed out')), 60_000) })])
       const requirement = name === 'google-workspace' ? 'Google consent was not checked.' : name === 'computer-use' ? 'Desktop permissions were not checked.' : name === 'playwright-cdp' ? 'The browser debugging connection was not checked.' : name === 'blender' ? 'Blender scene operations were not checked.' : ''
       return this.probes[name] = { state: 'Connection verified', detail: `${count} tools listed. The temporary check has finished. ${requirement}`, tools: count, checkedAt: Date.now(), canPrepare: !!mcpSource(name, spec) }

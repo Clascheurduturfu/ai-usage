@@ -12,9 +12,33 @@ export function demoManager(): ManagerSnapshot {
     },
     config: {
       schema: 2, revision: 'demo', autoSync: true, endpoints: [], proxies: [], profiles: [], activeProfiles: {},
+      disabledMcp: ['cloud-cli'], compactMcp: ['sample-files'], disabledSkills: ['legacy-notes'], contextBudget: 30_000,
       mcpAuth: { 'cloud-tools': { enabled: true, secretRef: 'mcp-cloud-tools-auth' }, 'cloud-logs': { enabled: true, secretRef: 'mcp-cloud-logs-auth' }, 'cloud-docs': { enabled: true, secretRef: 'mcp-cloud-docs-auth' }, 'cloud-builds': { enabled: true, secretRef: 'mcp-cloud-builds-auth' } }
     },
-    agents: [], skills: [], proxies: [], logs: [], instructions: '',
+    agents: [
+      { id: 'claude', name: 'Claude Code', installed: true, configPath: '~/.claude.json', skillControl: 'native', endpointSupport: true, restartRequired: true },
+      { id: 'codex', name: 'Codex', installed: true, configPath: '~/.codex/config.toml', skillControl: 'native', endpointSupport: true, restartRequired: true },
+      { id: 'zcode', name: 'ZCode', installed: true, configPath: '~/.zcode/cli/config.json', skillControl: 'shared', endpointSupport: false, restartRequired: true },
+      { id: 'antigravity', name: 'Antigravity', installed: true, configPath: '~/.gemini/config/mcp_config.json', skillControl: 'native', endpointSupport: false, restartRequired: true },
+      { id: 'cursor', name: 'Cursor', installed: false, configPath: '~/.cursor/mcp.json', skillControl: 'shared', endpointSupport: false, restartRequired: true }
+    ],
+    skills: [
+      { name: 'code-review', description: 'Review a diff for correctness, security and style issues before merging.', path: 'skills/code-review/SKILL.md', valid: true },
+      { name: 'release-notes', description: 'Draft release notes from merged pull requests and conventional commits.', path: 'skills/release-notes/SKILL.md', valid: true },
+      { name: 'sql-helper', description: 'Explain, optimize and safely migrate SQL queries and schemas.', path: 'skills/sql-helper/SKILL.md', valid: true },
+      { name: 'ui-audit', description: 'Audit a page for accessibility, contrast and layout regressions.', path: 'skills/ui-audit/SKILL.md', valid: true },
+      { name: 'legacy-notes', description: 'Old note-taking workflow kept for reference.', path: 'skills/legacy-notes/SKILL.md', valid: true },
+      { name: 'broken-skill', description: '', path: 'skills/broken-skill/SKILL.md', valid: false, issue: 'Missing name or description' }
+    ],
+    proxies: [], logs: [], instructions: 'Shared instructions for every agent. '.repeat(260),
+    mcpMetrics: {
+      'sample-files': { tools: 168, schemaBytes: 431_000, measuredAt: now - 3_600_000, calls: 42, errors: 3, lastCall: now - 7_200_000, byTool: { inspect_artifact: 14, decompile_function: 11, list_strings: 9, search_symbols: 5, read_bytes: 3 } },
+      blender: { tools: 24, schemaBytes: 38_000, measuredAt: now - 86_400_000, calls: 7, errors: 0, lastCall: now - 40_000, byTool: { get_scene: 4, run_script: 3 } },
+      'cloud-logs': { tools: 8, schemaBytes: 22_800, measuredAt: now - 600_000, calls: 3, errors: 0, byTool: { query_logs: 3 } },
+      'cloud-docs': { tools: 2, schemaBytes: 1_000, measuredAt: now - 90_000, calls: 0, errors: 0, byTool: {} },
+      'cloud-tools': { tools: 4, schemaBytes: 7_600, measuredAt: now - 86_400_000, calls: 12, errors: 1, byTool: { search: 8, execute: 4 } },
+      browser: { tools: 31, schemaBytes: 52_000, measuredAt: now - 3 * 86_400_000, calls: 2, errors: 0, lastCall: now - 41 * 86_400_000, trackedSince: now - 60 * 86_400_000, byTool: { open_page: 2 } }
+    },
     mcp: [
       { name: 'cloud-tools', transport: 'http', url: 'https://tools.example.com/mcp' },
       { name: 'cloud-logs', transport: 'http', url: 'https://logs.example.com/mcp' },
@@ -42,8 +66,15 @@ export function demoManager(): ManagerSnapshot {
 }
 export function demoManagerApi(): Partial<AiuApi> {
   const done = async (): Promise<void> => undefined
+  // Toggles change this in-memory copy so the preview responds like the real app.
+  const state = demoManager(), synced = { changed: 0, conflicts: [], warnings: [] }
+  const toggle = (key: 'disabledMcp' | 'compactMcp' | 'disabledSkills', name: string, listed: boolean) => { const values = new Set(state.config[key] ?? []); if (listed) values.add(name); else values.delete(name); state.config[key] = [...values]; return Promise.resolve(synced) }
   return {
-    getManager: async () => demoManager(), onManagerUpdated: () => () => undefined,
+    getManager: async () => structuredClone(state), onManagerUpdated: () => () => undefined,
+    setMcpEnabled: async (name: string, enabled: boolean) => toggle('disabledMcp', name, !enabled),
+    setMcpCompact: async (name: string, enabled: boolean) => toggle('compactMcp', name, enabled),
+    setSkillEnabled: async (name: string, enabled: boolean) => toggle('disabledSkills', name, !enabled),
+    setContextBudget: async (tokens: number) => { state.config.contextBudget = tokens },
     sharingSettings: async () => ({ folder: 'C:/Sample/Shared', passphrase: '' }), sharingFileExists: async () => true,
     checkMcp: async name => ({ state: 'Connection verified', detail: `${name}: 4 tools listed.`, tools: 4, checkedAt: Date.now(), canPrepare: false }),
     loginMcp: done, logoutMcp: done, stopMcp: done, resumeMcp: done, deleteMcp: done

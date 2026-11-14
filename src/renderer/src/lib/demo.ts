@@ -1,6 +1,7 @@
 import { APP_VERSION } from '../../../shared/version'
 // Development-only sample data. Never imported into a production build.
 import type { AiuApi } from '../../../shared/api'
+import type { UpdateStatus } from '../../../shared/update'
 import type { OverviewDTO, ProviderDetailDTO, QuotaSnapshotDTO, SessionRow, Settings, UsageFilter } from '../../../shared/types'
 import { PROVIDER_IDS, PROVIDER_NAMES } from '../../../shared/types'
 import { demoManagerApi } from './demo-manager'
@@ -53,6 +54,30 @@ function overview(): OverviewDTO {
     series30d: series({ days: 30 }), claude: { activeBlock: null, blocks: [], weeklyTokens: 0 }, codex: null, recentSessions: sessions.slice(0, 12),
     scan: { lastScanAt: now, scanning: false, filesScanned: 302, eventsIndexed: 1280, errors: [] } }
 }
+/** A simulated GitHub update: nothing is downloaded or installed in the preview. */
+function demoUpdateApi(): Partial<AiuApi> {
+  const listeners = new Set<() => void>()
+  let status: UpdateStatus = { channel: 'stable', autoCheck: true, installed: APP_VERSION, repository: 'sample/repo', releasesUrl: 'https://github.com', state: 'idle', installKind: 'installer' }
+  const set = (patch: Partial<UpdateStatus>): UpdateStatus => { status = { ...status, ...patch }; listeners.forEach(cb => cb()); return structuredClone(status) }
+  const next = (): UpdateStatus['available'] => status.channel === 'preview'
+    ? { version: '1.0.0-rc.3', name: 'AI Usage 1.0.0 RC 3', notes: 'Sample preview notes.\n- Command palette\n- In-app updates', url: 'https://github.com', prerelease: true, publishedAt: new Date().toISOString(), size: 48_200_000 }
+    : undefined
+  return {
+    onUpdateStatus: cb => { listeners.add(cb); return () => listeners.delete(cb) },
+    updateStatus: async () => structuredClone(status),
+    setUpdateChannel: async channel => set({ channel, state: 'idle', available: undefined, progress: undefined, message: undefined }),
+    setUpdateAutoCheck: async autoCheck => set({ autoCheck }),
+    checkForUpdates: async () => { set({ state: 'checking' }); await new Promise(r => setTimeout(r, 600)); const available = next(); return set({ state: available ? 'available' : 'up-to-date', available, checkedAt: Date.now() }) },
+    downloadUpdate: async () => {
+      const total = status.available?.size ?? 1
+      for (let received = 0; received <= total; received += total / 8) { set({ state: 'downloading', progress: { received, total } }); await new Promise(r => setTimeout(r, 120)) }
+      return set({ state: 'ready', progress: { received: total, total }, message: 'Verified. Install closes AI Usage, updates it and opens it again.' })
+    },
+    installUpdate: async () => set({ state: 'ready', message: 'Preview mode: nothing was installed.' }),
+    openReleases: async () => undefined
+  }
+}
+
 export function installDemo(): void {
   document.documentElement.dataset.demo = 'true'
   const demo: Partial<AiuApi> = {
@@ -82,7 +107,8 @@ export function installDemo(): void {
       sessions: selected({ days: 90, provider: id }), tools: [{ name: 'Read', count: 40, lastUsed: now }], blocks: [], activityHistory: [], limit: null, breakdowns: [], notes: ['Development preview using fictional data.'] }),
     getPriceCatalog: async () => [{ label: 'Sample model', matchSource: 'Sample', price: { input: 3, output: 15, cacheRead: .3, cacheWrite: 3.75 } }],
     fullRescan: async () => overview().scan, reindex: async () => overview().scan, pickFolder: async () => 'C:/Sample-custom-folder', openPath: async () => '', onDataUpdated: () => () => undefined,
-    ...demoManagerApi()
+    ...demoManagerApi(),
+    ...demoUpdateApi()
   }
   ;(window as unknown as { aiu: AiuApi }).aiu = demo as AiuApi
 }

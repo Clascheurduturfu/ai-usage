@@ -833,7 +833,7 @@ export function getHistory(db: DB, settings: Settings, filter: HistoryFilter, no
     FROM usage_events WHERE ts >= ? AND ts <= ? AND session_id IS NOT NULL
     ${filter.provider ? 'AND provider = ?' : ''}
     GROUP BY provider, session_id, model, kind, (cost_usd IS NOT NULL), COALESCE(json_extract(meta, '$.longContext'), 0), COALESCE(json_extract(meta, '$.priceMultiplier'), 1)
-  `).all(...(filter.provider ? [from, now, filter.provider] : [from, now])) as Array<GroupRow & {
+  `).all(...(filter.provider ? [from, now, filter.provider] : [from, now])) as unknown as Array<GroupRow & {
     provider: ProviderId; session_id: string; project: string | null; started: number; last: number
   }>
   const sessions = new Map<string, SessionRow>()

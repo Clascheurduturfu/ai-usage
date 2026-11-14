@@ -1,4 +1,5 @@
 import type { AnalyticsDTO, AppMeta, HistoryDTO, HistoryFilter, OverviewDTO, PriceCatalogEntry, ProviderDetailDTO, ProviderId, QuotaSnapshotDTO, ScanStatus, Settings, UsageFilter } from './types'
+import type { UpdateChannel, UpdateStatus } from './update'
 import type { AgentProfile, EndpointRecord, EndpointTest, LaunchSelection, ManagerSnapshot, McpRecord, MigrationPreview, ProxyRecord, SharingStatus, SyncPreview, SyncResult, InstallPreview, McpSetupPreview, McpDeviceStatus } from './manager'
 
 export function createApi(
@@ -25,6 +26,14 @@ export function createApi(
     openPath: native.openPath,
     onDataUpdated: (cb: () => void) => subscribe('data:updated', cb),
     onManagerUpdated: (cb: () => void) => subscribe('manager:updated', cb),
+    onUpdateStatus: (cb: () => void) => subscribe('update:updated', cb),
+    updateStatus: () => invoke<UpdateStatus>('update:status'),
+    checkForUpdates: () => invoke<UpdateStatus>('update:check'),
+    setUpdateChannel: (channel: UpdateChannel) => invoke<UpdateStatus>('update:channel', channel),
+    setUpdateAutoCheck: (enabled: boolean) => invoke<UpdateStatus>('update:autoCheck', enabled),
+    downloadUpdate: () => invoke<UpdateStatus>('update:download'),
+    installUpdate: () => invoke<UpdateStatus>('update:install'),
+    openReleases: () => invoke<void>('update:releases'),
     getManager: () => invoke<ManagerSnapshot>('manager:get'),
     stopMcp: (name: string) => native.mcpControl ? native.mcpControl('stop', name) : invoke<void>('mcp:pause', name),
     resumeMcp: (name: string) => native.mcpControl ? native.mcpControl('resume', name) : invoke<void>('mcp:resume', name),
@@ -67,6 +76,11 @@ export function createApi(
     restoreSync: (backupId: string) => invoke<SyncResult>('manager:restore', backupId),
     saveMcp: (server: McpRecord, oldName?: string) => invoke<{ warnings: string[]; sync?: SyncResult }>('mcp:save', { server, oldName }),
     deleteMcp: (name: string) => invoke<void>('mcp:delete', name),
+    setMcpEnabled: (name: string, enabled: boolean) => invoke<SyncResult>('mcp:setEnabled', { name, enabled }),
+    setMcpCompact: (name: string, enabled: boolean) => invoke<SyncResult>('mcp:setCompact', { name, enabled }),
+    setSkillEnabled: (name: string, enabled: boolean) => invoke<SyncResult>('skill:setEnabled', { name, enabled }),
+    setContextBudget: (tokens: number) => invoke<void>('manager:contextBudget', tokens),
+    resetMcpCalls: (name?: string) => invoke<void>('mcp:resetCalls', name),
     saveInstructions: (text: string) => invoke<void>('instructions:save', text),
     readSkill: (name: string) => invoke<string>('skill:read', name),
     saveSkill: (name: string, text: string) => invoke<void>('skill:save', { name, text }),

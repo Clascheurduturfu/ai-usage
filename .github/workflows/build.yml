@@ -3,7 +3,7 @@ name: Build desktop packages
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, preview]
     tags: ['v*']
   workflow_dispatch:
 
@@ -37,6 +37,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
+      - name: Test
+        run: npm test
       - name: Build Windows installer
         if: runner.os == 'Windows'
         run: npm run dist

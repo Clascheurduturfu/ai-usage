@@ -4,7 +4,7 @@ Start with an issue describing the observable problem or feature. Keep changes f
 
 ## Development
 
-Use Node.js 24.14 or newer within the 24.x line, Rust stable and the native build prerequisites in the README.
+Use Node.js 24.14 or newer, Rust stable and the native build prerequisites in the README.
 
 ```sh
 npm ci

@@ -154,11 +154,15 @@ export function Btn({
   )
 }
 
-export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({ checked, onChange, label, disabled, title }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean; title?: string }) {
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
+      title={title ?? label}
+      disabled={disabled}
       className="w-[36px] h-[20px] rounded-full relative shrink-0 clickable"
       style={{ background: checked ? 'var(--accent)' : 'var(--border)', border: 'none' }}
       onClick={() => onChange(!checked)}

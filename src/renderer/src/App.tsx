@@ -1,6 +1,7 @@
 import { APP_DISPLAY_VERSION, displayVersion } from '../../shared/version'
 import { createContext, useCallback, useContext, useEffect, useRef, useState, lazy, Suspense } from 'react'
-import { Activity, ArrowUpRight, BarChart3, Check, ChevronRight, CircleHelp, History, LayoutDashboard, Moon, Plug, Search, Settings as SettingsIcon, ShieldCheck, Sun, X } from 'lucide-react'
+import { Activity, ArrowUpRight, BarChart3, Bot, Check, ChevronRight, CircleHelp, History, LayoutDashboard, LibraryBig, Moon, Plug, RefreshCw, Search, Settings as SettingsIcon, ShieldCheck, Sun, Waypoints, X } from 'lucide-react'
+import { CommandPalette, type Command } from './components/CommandPalette'
 import type { AppMeta, OverviewDTO, ProviderId, QuotaSnapshotDTO, Settings } from '../../shared/types'
 import { PROVIDER_IDS, PROVIDER_NAMES } from '../../shared/types'
 import { api } from './lib/ipc'
@@ -29,19 +30,19 @@ export function useApp(): AppCtx {
 }
 function initialPage(): Page {
   const p = new URLSearchParams(window.location.search).get('page')
-  if (p && ['analytics', 'settings', 'history', 'providers'].includes(p)) return { kind: p as 'analytics' | 'settings' | 'history' | 'providers' }
+  if (p && ['dashboard', 'analytics', 'settings', 'history', 'providers', 'endpoints', 'agents', 'shared'].includes(p)) return { kind: p } as Page
   if (PROVIDER_IDS.includes(p as ProviderId)) return { kind: 'provider', id: p as ProviderId }
   try { const saved = JSON.parse(localStorage.getItem('aiu:last-page') ?? 'null'); if (saved && ['dashboard', 'analytics', 'settings', 'history', 'providers', 'endpoints', 'proxies', 'agents', 'shared'].includes(saved.kind)) return saved } catch { /* invalid saved navigation */ }
   return { kind: 'dashboard' }
 }
 const NAV = [
-  { kind: 'dashboard', label: 'Overview', icon: LayoutDashboard },
-  { kind: 'history', label: 'Usage history', icon: History },
-  { kind: 'analytics', label: 'Insights', icon: BarChart3 },
-  { kind: 'providers', label: 'Connected tools', icon: Plug },
-  { kind: 'endpoints', label: 'Endpoints', icon: Plug },
-  { kind: 'agents', label: 'Agent profiles', icon: ShieldCheck },
-  { kind: 'shared', label: 'Shared library', icon: SettingsIcon }
+  { kind: 'dashboard', label: 'Overview', icon: LayoutDashboard, group: 'USAGE' },
+  { kind: 'history', label: 'Usage history', icon: History, group: 'USAGE' },
+  { kind: 'analytics', label: 'Insights', icon: BarChart3, group: 'USAGE' },
+  { kind: 'providers', label: 'Connected tools', icon: Plug, group: 'USAGE' },
+  { kind: 'shared', label: 'Shared library', icon: LibraryBig, group: 'AGENTS' },
+  { kind: 'agents', label: 'Agent profiles', icon: Bot, group: 'AGENTS' },
+  { kind: 'endpoints', label: 'Endpoints', icon: Waypoints, group: 'AGENTS' }
 ] as const
 export default function App(): React.ReactElement {
   const [page, setPage] = useState<Page>(initialPage)
@@ -55,6 +56,7 @@ export default function App(): React.ReactElement {
   const [busy, setBusy] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [help, setHelp] = useState(false)
+  const [palette, setPalette] = useState(false)
   const refreshTask = useRef<Promise<void> | null>(null)
   const actionBusy = useRef(false)
   const mainRef = useRef<HTMLElement>(null)
@@ -93,7 +95,7 @@ export default function App(): React.ReactElement {
   useEffect(() => { localStorage.setItem('aiu:last-page', JSON.stringify(page)) }, [page])
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPage({ kind: 'history' }) }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette(open => !open) }
       if (e.key === 'Escape') setHelp(false)
     }
     window.addEventListener('keydown', onKey)
@@ -102,6 +104,17 @@ export default function App(): React.ReactElement {
   const active = overview?.providers.filter((p) => p.detected || p.eventCount > 0 || (p.id === 'antigravity' && quota?.antigravity && !quota.antigravity.error) || (p.id === 'codex' && quota?.chatgpt && !quota.chatgpt.error)) ?? []
   const title = page.kind === 'provider' ? PROVIDER_NAMES[page.id] : NAV.find((n) => n.kind === page.kind)?.label ?? 'Settings'
   const dark = settings?.theme === 'dark' || (settings?.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+  const searchHistory = useCallback((query: string) => { try { sessionStorage.setItem('aiu:history-search', query) } catch { /* optional hand-off */ } setPage({ kind: 'history' }) }, [])
+  const commands: Command[] = [
+    ...NAV.map(({ kind, label, icon }) => ({ id: `page:${kind}`, group: 'Go to', label, icon, keywords: 'page open', run: () => navigate({ kind }) })),
+    { id: 'page:settings', group: 'Go to', label: 'Settings', icon: SettingsIcon, keywords: 'preferences options', run: () => navigate({ kind: 'settings' }) },
+    ...active.map(p => ({ id: `tool:${p.id}`, group: 'Your tools', label: PROVIDER_NAMES[p.id], icon: Activity, hint: `${p.eventCount.toLocaleString()} events`, keywords: 'tool provider usage quota', run: () => openProvider(p.id) })),
+    { id: 'act:refresh', group: 'Actions', label: 'Refresh usage and quotas', icon: RefreshCw, keywords: 'reload update scan', run: () => void runAction('refresh', () => Promise.all([refresh(), refreshQuotas()]), 'Usage and quotas refreshed') },
+    { id: 'act:sync', group: 'Actions', label: 'Sync agents now', icon: Bot, keywords: 'apply config mcp skills clients', run: () => void runAction('sync', () => api().syncAgents(), 'Agents synced. Restart clients whose configuration changed.') },
+    { id: 'act:theme', group: 'Actions', label: dark ? 'Switch to light theme' : 'Switch to dark theme', icon: dark ? Sun : Moon, keywords: 'theme appearance mode', run: () => void runAction('theme', () => api().setSettings({ theme: dark ? 'light' : 'dark' })) },
+    { id: 'act:updates', group: 'Actions', label: 'Check for updates', icon: ArrowUpRight, keywords: 'update upgrade version release preview stable', run: () => { navigate({ kind: 'settings' }); void runAction('updates', () => api().checkForUpdates()) } },
+    { id: 'act:help', group: 'Actions', label: 'Explain where the numbers come from', icon: CircleHelp, keywords: 'help about data privacy', run: () => setHelp(true) }
+  ]
   return <Ctx.Provider value={{ meta, settings, overview, quota, version, now, error, busy, refresh, refreshQuotas, runAction, openProvider, navigate }}>
     <div className="app-shell">
       <aside className="sidebar">
@@ -109,11 +122,10 @@ export default function App(): React.ReactElement {
           <span className="brand-mark"><Activity size={23} strokeWidth={2.2} /></span>
           <span><strong>AI Usage<span className="brand-dot">.</span></strong><small>Your personal control room</small></span>
         </button>
-        <button className="search-shortcut" onClick={() => navigate({ kind: 'history' })}><Search size={15} /><span>Find usage…</span><kbd>Ctrl K</kbd></button>
-        <div className="nav-label">WORKSPACE</div>
-        <nav aria-label="Main navigation">{NAV.map(({ kind, label, icon: Icon }) => <button key={kind} className={`nav-item ${page.kind === kind ? 'active' : ''}`} aria-current={page.kind === kind ? 'page' : undefined} onClick={() => navigate({ kind })}>
+        <button className="search-shortcut" onClick={() => setPalette(true)} aria-haspopup="dialog"><Search size={15} /><span>Search or jump…</span><kbd>Ctrl K</kbd></button>
+        <nav aria-label="Main navigation">{(['USAGE', 'AGENTS'] as const).map(group => <div className="nav-group" key={group}><div className="nav-label">{group}</div>{NAV.filter(n => n.group === group).map(({ kind, label, icon: Icon }) => <button key={kind} className={`nav-item ${page.kind === kind ? 'active' : ''}`} aria-current={page.kind === kind ? 'page' : undefined} onClick={() => navigate({ kind })}>
           <Icon size={17} /><span>{label}</span>{kind === 'providers' && <span className="nav-count">{active.length}</span>}
-        </button>)}</nav>
+        </button>)}</div>)}</nav>
         <div className="nav-label tools-label">YOUR TOOLS <span>{active.length}</span></div>
         <nav aria-label="Tool details" className="tool-nav">{active.map((p) => <button key={p.id} className={`nav-item ${page.kind === 'provider' && page.id === p.id ? 'active' : ''}`} onClick={() => openProvider(p.id)}>
           <span className="provider-dot" style={{ background: PROVIDER_COLORS[p.id] }} /><span>{p.name}</span><ChevronRight size={12} />
@@ -139,6 +151,7 @@ export default function App(): React.ReactElement {
         </main>
         <footer className="statusbar"><span><span className="live-dot" />{overview?.scan.lastScanAt ? `Local index updated ${relTime(overview.scan.lastScanAt, now)}` : 'Preparing local index…'}</span><button onClick={() => navigate({ kind: 'providers' })}>{overview?.scan.errors.length ? `${overview.scan.errors.length} scan warnings` : `${active.length} tools detected`}<ArrowUpRight size={12} /></button></footer>
       </div>
+      {palette && <CommandPalette commands={commands} close={() => setPalette(false)} runAction={runAction} searchHistory={searchHistory} />}
       {toast && <div className="toast" role="status"><Check size={16} /><span>{toast}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={14} /></button></div>}
     </div>
   </Ctx.Provider>

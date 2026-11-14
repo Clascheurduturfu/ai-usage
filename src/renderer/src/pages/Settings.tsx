@@ -7,6 +7,7 @@ import { useApp } from '../App'
 import { api } from '../lib/ipc'
 import { fmtUsd } from '../lib/format'
 import { Btn, Field, Panel, Table } from '../components/ui'
+import { UpdatesPanel } from '../components/UpdatesPanel'
 
 const TABS = ['General', 'Plans', 'Data sources', 'Android sync', 'Pricing'] as const
 type Tab = typeof TABS[number]
@@ -54,6 +55,7 @@ function SettingsForm({ initial }: { initial: Settings }): React.ReactElement {
     <div className="page-heading"><div><div className="eyebrow">MAKE IT WORK FOR YOU</div><h1>Settings<span className="brand-dot">.</span></h1><p>Adjust your workspace, plans and data connections.</p></div><span className="muted text-[11px]">AI Usage · v{meta?.version ? displayVersion(meta.version) : APP_DISPLAY_VERSION}</span></div>
     <nav className="settings-tabs" aria-label="Settings sections">{TABS.map((t) => <button key={t} aria-current={tab === t ? 'page' : undefined} className={tab === t ? 'selected' : ''} onClick={() => setTab(t)}>{t}</button>)}</nav>
     {tab === 'General' && <>
+      <UpdatesPanel />
       <Panel className="settings-panel"><h2>Your workspace</h2><p>Choose how AI Usage looks and when it starts.</p>
         <div className="setting-row"><div><strong>Appearance</strong><p>Dark, light, or follow your system preference.</p></div><select aria-label="Theme" value={draft.theme} onChange={(e) => patch({ theme: e.target.value as Settings['theme'] })}><option value="dark">Dark</option><option value="light">Light</option><option value="system">Follow system</option></select></div>
         <label className="setting-row"><div><strong>Launch at login</strong><p>Start monitoring automatically when you sign in to your computer.</p></div><input type="checkbox" checked={draft.launchAtLogin} onChange={(e) => patch({ launchAtLogin: e.target.checked })} /></label>

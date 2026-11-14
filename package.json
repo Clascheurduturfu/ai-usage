@@ -1,7 +1,7 @@
 {
   "name": "ai-usage",
   "productName": "AI Usage",
-  "version": "1.0.0",
+  "version": "1.0.0-rc.2",
   "description": "Your AI control room for quotas, usage, endpoints and shared agent libraries.",
   "author": "Clascheurduturfu",
   "license": "MIT",
@@ -13,7 +13,6 @@
     "test:watch": "node scripts/run-tests.mjs --watch",
     "typecheck": "tsc --noEmit",
     "build": "node scripts/build-broker.mjs && vite build",
-    "rebuild": "npm rebuild better-sqlite3",
     "dist": "node scripts/build-desktop.mjs",
     "pack": "node scripts/build-desktop.mjs --no-bundle",
     "preview:ui": "node scripts/preview.mjs",
@@ -23,7 +22,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@tauri-apps/api": "^2.12.3",
-    "better-sqlite3": "^12.4.1",
     "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.9.1",
     "yaml": "^2.9.1",
@@ -32,7 +30,6 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
     "@tauri-apps/cli": "^2.12.2",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.6.2",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
@@ -50,7 +47,7 @@
   },
   "private": true,
   "engines": {
-    "node": ">=24.14.0 <25"
+    "node": ">=24.14.0"
   },
   "repository": {
     "type": "git",

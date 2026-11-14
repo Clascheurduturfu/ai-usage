@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/overview.svg" alt="AI Usage: your AI control room, with capacity cards and a shared agent library" width="100%" />
   <br /><br />
-  <a href="https://github.com/Clascheurduturfu/ai-usage/releases"><img alt="Version 1.0-beta-2" src="https://img.shields.io/badge/version-1.0--beta--3-83dfb0?style=flat-square" /></a>
+  <a href="https://github.com/Clascheurduturfu/ai-usage/releases"><img alt="Version 1.0.0-rc.2" src="https://img.shields.io/badge/version-1.0.0--rc.2-83dfb0?style=flat-square" /></a>
   <img alt="Windows and macOS" src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS-7ca7ff?style=flat-square" />
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-c7bbff?style=flat-square" /></a>
   <img alt="Local usage data, optional encrypted sharing" src="https://img.shields.io/badge/data-local%20%C2%B7%20optional%20sharing-e4c990?style=flat-square" />
@@ -27,10 +27,12 @@ Built with **Tauri 2, React and a bundled Node runtime**, it stays available in 
 | **Capacity at a glance** | Quota cards, remaining percentages and reset countdowns where providers expose them. |
 | **Local usage history** | Tool, project, session and model views; cost estimates, charts and CSV export. |
 | **One shared library** | MCP servers, skills with supporting files, and instructions synchronized into supported coding clients. |
+| **Context budget** | Per-agent estimate of always-loaded tokens (tool schemas, skill index, rules), global enable switches, compact tool lists for huge MCPs, and per-tool call counts. |
 | **Managed MCP sessions** | Pinned preparation, in-app OAuth, a native process supervisor, Stop/Resume, client isolation, bounded workers/queues and visible process ownership. |
 | **Your choice of endpoint** | OpenAI Chat Completions, OpenAI Responses and Anthropic Messages, with 20 generic provider definitions. |
 | **Local connections** | Loopback routes, aliases, client authentication, streaming and explicit Start / Stop / autostart controls. |
 | **Encrypted sharing** | Publish your library and saved credentials through a folder synced by your existing cloud client. |
+| **Updates and command palette** | Stable or Preview channel from GitHub Releases with verified downloads; Ctrl K to jump anywhere or toggle any MCP or skill. |
 | **Google Workspace** | Official gws through the app adapter, with named accounts and explicit account selection on each request. |
 
 The overview artwork is illustrative and contains invented data. Availability and quotas come from your own installed tools and accounts.
@@ -50,7 +52,7 @@ The app's MCP preparation catalog recognizes Blender Lab, Playwright, Computer U
 3. Add your MCP definitions and skills in **Shared library**, prepare local servers, review Sync and restart the coding clients after their configuration changes. Automatic sync is initially off; enable it when you are ready.
 4. Add endpoints or profiles only when you need them. A fresh installation has 20 generic provider and local-server definitions and no saved profiles, accounts, MCP registrations, keys or ntfy channel.
 
-Packages bundle Node and SQLite; end users do not need to install Node just to run AI Usage. Windows uses WebView2. Source-built macOS packages target macOS 12 or later. Version 1.0-beta-2 packages are unsigned on Windows and ad-hoc signed on macOS, without notarization. Automatic updates are not included in this release.
+Packages bundle Node and SQLite; end users do not need to install Node just to run AI Usage. Windows uses WebView2. Source-built macOS packages target macOS 12 or later. Version 1.0-beta-2 packages are unsigned on Windows and ad-hoc signed on macOS, without notarization. Settings → Updates checks GitHub Releases on a Stable or Preview channel, verifies the download's SHA-256 digest and installs only when you choose to.
 
 **Moving from a private beta on macOS?** Publish a fresh encrypted library before replacing that installation. The public app uses a new app/Keychain identity, so its vault cannot directly unlock beta credentials. Enter your Sharing passphrase and Import to protect those credentials under the public identity. Keep the beta and its data until the import succeeds; provider sign-ins absent from the bundle need reconnecting. The public version series starts at 1.0.0-beta.3 independently of private beta numbering.
 
@@ -80,7 +82,7 @@ The optional [Android companion source](android/) provides snapshot views and ho
 
 ## Build from source
 
-Use **Node.js 24.14+ within the 24.x line**, **Rust stable**, and the [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/). Windows builds need MSVC build tools; macOS builds need Xcode command-line tools.
+Use **Node.js 24.14 or later**, **Rust stable**, and the [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/). Windows builds need MSVC build tools; macOS builds need Xcode command-line tools.
 
 ```sh
 git clone https://github.com/Clascheurduturfu/ai-usage.git

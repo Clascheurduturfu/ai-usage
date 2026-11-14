@@ -1,9 +1,30 @@
-import Database from 'better-sqlite3'
+import type { DatabaseSync } from 'node:sqlite'
+import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import path from 'node:path'
 import { userDataPath } from './paths'
 
-export type DB = Database.Database
+export type DB = DatabaseSync
+type Params = Record<string, import('node:sqlite').SQLInputValue>
+
+// Built-in SQLite needs no native module, so the bundled runtime and the build
+// machine's Node can differ. Node 24 flags it experimental on first load; that
+// notice is not actionable for users, so it alone is filtered.
+const { DatabaseSync: Database } = ((): typeof import('node:sqlite') => {
+  const emit = process.emitWarning
+  process.emitWarning = function (warning: string | Error, ...rest: unknown[]) {
+    if (String(typeof warning === 'string' ? warning : warning?.message).startsWith('SQLite is an experimental')) return
+    return (emit as (...args: unknown[]) => void).call(process, warning, ...rest)
+  } as typeof process.emitWarning
+  try { return createRequire(import.meta.url)('node:sqlite') } finally { process.emitWarning = emit }
+})()
+
+/** Runs fn in one transaction (joins one that is already open). */
+export function transaction<T>(db: DB, fn: () => T): T {
+  if (db.isTransaction) return fn()
+  db.exec('BEGIN')
+  try { const result = fn(); db.exec('COMMIT'); return result } catch (error) { if (db.isTransaction) db.exec('ROLLBACK'); throw error }
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -67,8 +88,10 @@ CREATE TABLE IF NOT EXISTS kv (
 export function openDb(dbPath: string): DB {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('synchronous = NORMAL')
+  // Callers pass whole row objects; extra fields are ignored, as before.
+  const prepare = db.prepare.bind(db)
+  db.prepare = ((sql: string) => { const statement = prepare(sql); statement.setAllowUnknownNamedParameters(true); return statement }) as DB['prepare']
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL')
   db.exec(SCHEMA)
   return db
 }
@@ -77,7 +100,7 @@ export function openDb(dbPath: string): DB {
 export function openExternalDb(file: string): DB {
   let db: DB | undefined
   try {
-    db = new Database(file, { readonly: true })
+    db = new Database(file, { readOnly: true })
     db.prepare('PRAGMA schema_version').get()
     return db
   } catch (error) {
@@ -86,7 +109,7 @@ export function openExternalDb(file: string): DB {
     // Don't create sidecars in another app's directory or ignore a live WAL.
     const walSize = (): number => { try { return fs.statSync(file + '-wal').size } catch { return 0 } }
     const before = fs.statSync(file)
-    if ((error as { code?: string }).code !== 'SQLITE_CANTOPEN' || walSize() > 0 || before.size > 64 * 1024 * 1024) throw error
+    if ((error as { errcode?: number }).errcode !== 14 /* SQLITE_CANTOPEN */ || walSize() > 0 || before.size > 64 * 1024 * 1024) throw error
     const root = path.join(userDataPath(), 'external-db-snapshots')
     fs.mkdirSync(root, { recursive: true, mode: 0o700 })
     const directory = fs.mkdtempSync(path.join(root, 'read-')), snapshot = path.join(directory, 'source.sqlite')
@@ -95,7 +118,7 @@ export function openExternalDb(file: string): DB {
       const after = fs.statSync(file)
       if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || walSize() > 0) throw new Error('Source database changed during collection; scan again')
       const copy = new Database(snapshot)
-      try { copy.pragma('query_only = ON'); copy.prepare('PRAGMA schema_version').get() }
+      try { copy.exec('PRAGMA query_only = ON'); copy.prepare('PRAGMA schema_version').get() }
       catch (error) { copy.close(); throw error }
       const close = copy.close.bind(copy)
       copy.close = () => { try { return close() } finally { fs.rmSync(directory, { recursive: true, force: true }) } }
@@ -154,10 +177,9 @@ export function upsertEvents(db: DB, events: UpsertEvent[]): void {
         usage_events.input_tokens+usage_events.output_tokens+usage_events.cache_read_tokens+usage_events.cache_write_tokens
         THEN usage_events.meta ELSE excluded.meta END, source_file=excluded.source_file
   `)
-  const tx = db.transaction((rows: UpsertEvent[]) => {
-    for (const row of rows) stmt.run(row)
+  transaction(db, () => {
+    for (const row of events) stmt.run(row as unknown as Params)
   })
-  tx(events)
 }
 
 export function upsertTools(db: DB, tools: UpsertTool[]): void {
@@ -169,10 +191,9 @@ export function upsertTools(db: DB, tools: UpsertTool[]): void {
       ts=excluded.ts, name=excluded.name, session_id=excluded.session_id,
       project=excluded.project, source_file=excluded.source_file
   `)
-  const tx = db.transaction((rows: UpsertTool[]) => {
-    for (const row of rows) stmt.run(row)
+  transaction(db, () => {
+    for (const row of tools) stmt.run(row as unknown as Params)
   })
-  tx(tools)
 }
 
 export function upsertSnapshots(db: DB, rows: { key: string; provider: string; ts: number; data: unknown }[]): void {
@@ -181,10 +202,9 @@ export function upsertSnapshots(db: DB, rows: { key: string; provider: string; t
     INSERT INTO snapshots (key, provider, ts, data) VALUES (@key, @provider, @ts, @data)
     ON CONFLICT(key) DO UPDATE SET ts=excluded.ts, data=excluded.data
   `)
-  const tx = db.transaction((input: typeof rows) => {
-    for (const row of input) stmt.run({ ...row, data: JSON.stringify(row.data) })
+  transaction(db, () => {
+    for (const row of rows) stmt.run({ ...row, data: JSON.stringify(row.data) })
   })
-  tx(rows)
 }
 
 export function deleteFileData(db: DB, sourceFile: string): void {

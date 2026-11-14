@@ -45,11 +45,17 @@ export class Sharing {
   private state: SharingStatus = { folder: '', enabled: false, unlocked: false, pending: 0 }
   private localRevision = ''
   constructor(private store: ManagerStore, private vault: Vault, private home = os.homedir()) {}
-  private file(): string { return path.join(this.state.folder, 'ai-usage-shared.encrypted.json') }
+  private file(): string { return path.join(this.normalizeFolder(this.state.folder), 'ai-usage-shared.encrypted.json') }
   private stateFile(): string { return path.join(this.store.data, 'sharing.json') }
+  /** Tolerate a shared FILE path pasted where the folder belongs. */
+  private normalizeFolder(folder: string): string {
+    const trimmed = folder.replace(/[\\/]+$/, '')
+    return trimmed.toLowerCase().endsWith('ai-usage-shared.encrypted.json') ? path.dirname(trimmed) : trimmed
+  }
   async load(): Promise<void> {
     const saved = JSON.parse(await readText(this.stateFile()) ?? '{}')
     this.state = { ...this.state, ...saved, unlocked: false, pending: 0 }
+    this.state.folder = this.normalizeFolder(this.state.folder)
     if (this.state.enabled && this.vault.refs().includes('sharing-passphrase')) {
       try { this.password = await this.vault.get('sharing-passphrase'); this.state.unlocked = true }
       catch { this.password = ''; this.state.error = 'Saved sharing password is unavailable on this device. Enter it again.' }
@@ -58,6 +64,7 @@ export class Sharing {
   }
   status(): SharingStatus { return { ...this.state } }
   async fileExists(folder = this.state.folder): Promise<boolean> {
+    folder = this.normalizeFolder(folder)
     if (!folder || !path.isAbsolute(folder)) return false
     return fs.stat(path.join(folder, 'ai-usage-shared.encrypted.json')).then(s => s.isFile(), e => { if (e.code === 'ENOENT') return false; throw e })
   }
@@ -71,6 +78,7 @@ export class Sharing {
   hasLocalChanges(): boolean { return this.localRevision !== this.store.config.revision }
   async configure(folder: string, password: string): Promise<SharingStatus> {
     if (password.length < 12) throw new Error('Use a shared passphrase with at least 12 characters')
+    folder = this.normalizeFolder(folder)
     if (!path.isAbsolute(folder)) throw new Error('Select an absolute shared folder')
     await fs.mkdir(folder, { recursive: true })
     const sameFolder = folder === this.state.folder
@@ -81,6 +89,7 @@ export class Sharing {
   }
   async useSettings(folder: string, password: string, importing: boolean): Promise<void> {
     if (password.length < 12) throw new Error('Use a shared passphrase with at least 12 characters')
+    folder = this.normalizeFolder(folder)
     if (!path.isAbsolute(folder)) throw new Error('Select an absolute shared folder')
     const existing = await readText(path.join(folder, 'ai-usage-shared.encrypted.json'))
     if (importing && !existing) throw new Error('No shared bundle exists yet')
@@ -102,7 +111,8 @@ export class Sharing {
     if (old) decryptBundle(old, this.password)
     const skills: Record<string, string> = {}
     let size = 0
-    const root = path.join(this.store.pool, 'skills')
+    // Disabled skills are parked outside the shared folder; they are still part of the library.
+    let root = this.store.skillRoot
     const walk = async (directory: string): Promise<void> => {
       for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
         if (entry.name.startsWith('.') || ['node_modules', '__pycache__'].includes(entry.name) || entry.isSymbolicLink()) continue
@@ -115,19 +125,34 @@ export class Sharing {
         }
       }
     }
-    await walk(root)
+    for (const base of [this.store.skillRoot, this.store.parkedSkillRoot]) { root = base; if (await fs.stat(base).then(s => s.isDirectory(), () => false)) await walk(base) }
     // MCP OAuth grants rotate on every refresh, so a copied grant breaks whichever
     // device refreshes second. They stay on the device that signed in; only the
     // "connect through AI Usage" setting travels.
     const refs = new Set([...this.store.config.endpoints.map(e => e.secretRef), ...this.store.config.proxies.map(p => p.clientSecretRef), this.store.config.workspaceOAuth?.secretRef, ...Object.values(this.store.config.workspaceAccounts ?? {}).map(v => v.secretRef)].filter((ref): ref is string => !!ref))
-    const credentials = Object.fromEntries(await Promise.all([...refs].map(async ref => [ref, await this.vault.get(ref)])))
-    const bundle: Bundle = { config: { ...this.store.config, schema: 2 }, endpointLibrary: this.store.endpointSnapshot(), mcp: mapMcpPaths(portableMcp(await this.store.mcpRaw()), this.home, this.store.pool, true), instructions: await readText(path.join(this.store.pool, 'AGENTS.md')) ?? '', skills, credentials }
+    // A vault can lose device-scoped credentials over time. Publish survives by
+    // omitting them and stripping the dangling references instead of failing.
+    const credentials: Record<string, string> = {}, skipped: string[] = []
+    for (const ref of refs) { try { credentials[ref] = await this.vault.get(ref) } catch { skipped.push(ref) } }
+    const config = structuredClone(this.store.config)
+    config.schema = 2
+    config.endpoints = config.endpoints.map(e => e.secretRef && skipped.includes(e.secretRef) ? { ...e, secretRef: undefined } : e)
+    config.proxies = config.proxies.map(p => p.clientSecretRef && skipped.includes(p.clientSecretRef) ? { ...p, clientSecretRef: undefined, authMode: 'none' as const } : p)
+    for (const [account, spec] of Object.entries(config.workspaceAccounts ?? {})) if (skipped.includes(spec.secretRef)) delete config.workspaceAccounts![account]
+    if (config.workspaceOAuth && skipped.includes(config.workspaceOAuth.secretRef)) delete config.workspaceOAuth
+    const library = structuredClone(this.store.endpointSnapshot())
+    library.custom = (library.custom ?? []).map(e => e.secretRef && skipped.includes(e.secretRef) ? { ...e, secretRef: undefined } : e)
+    for (const patch of Object.values(library.overrides ?? {})) if (patch?.secretRef && skipped.includes(patch.secretRef)) delete patch.secretRef
+    const bundle: Bundle = { config, endpointLibrary: library, mcp: mapMcpPaths(portableMcp(await this.store.mcpRaw()), this.home, this.store.pool, true), instructions: await readText(path.join(this.store.pool, 'AGENTS.md')) ?? '', skills, credentials }
     const revision = randomUUID(), envelope = encryptBundle(bundle, this.password, revision, old?.revision)
     // Recheck immediately before the atomic replace to detect cloud-client updates during collection.
     if (oldText) await atomicWrite(path.join(this.store.data, 'shared-publications', randomUUID() + '.encrypted.json'), oldText)
     if (await readText(this.file()) !== oldText) throw new Error('Shared bundle changed during publication. Check the latest file and retry Publish.')
     await atomicWrite(this.file(), JSON.stringify(envelope))
-    this.state.revision = revision; this.state.pending = 0; delete this.state.error; this.localRevision = this.store.config.revision
+    this.state.revision = revision; this.state.pending = 0
+    if (skipped.length) this.state.error = `Published, but skipped ${skipped.length} unavailable credential${skipped.length === 1 ? '' : 's'} (${skipped.join(', ')}). Those arrive without their key; enter the key on the importing device.`
+    else delete this.state.error
+    this.localRevision = this.store.config.revision
     await atomicWrite(this.stateFile(), JSON.stringify({ ...this.state, localRevision: this.localRevision, unlocked: undefined, pending: undefined }))
     return this.status()
   }
@@ -152,7 +177,7 @@ export class Sharing {
     }
     for (const [ref, value] of Object.entries(bundle.credentials)) { validateName(ref); if (typeof value !== 'string' || value.length > 128_000) throw new Error('Invalid shared credential') }
     for (const endpoint of bundle.config.endpoints) { validateName(endpoint.id); if (endpoint.baseUrl) validateUrl(endpoint.baseUrl); if (!['api-key', 'cline', 'antigravity'].includes(endpoint.credentialKind) || !['openai-chat', 'openai-responses', 'anthropic'].includes(endpoint.protocol) || !Array.isArray(endpoint.models)) throw new Error('Invalid shared endpoint') }
-    for (const proxy of bundle.config.proxies) { validateName(proxy.id); if (proxy.authMode !== 'none') validateName(proxy.clientSecretRef); if (!Number.isInteger(proxy.port) || proxy.port < 1024 || proxy.port > 65535 || !Array.isArray(proxy.routes)) throw new Error('Invalid shared listener') }
+    for (const proxy of bundle.config.proxies) { validateName(proxy.id); if (proxy.authMode !== 'none') { if (!proxy.clientSecretRef) throw new Error('Invalid shared listener'); validateName(proxy.clientSecretRef) }; if (!Number.isInteger(proxy.port) || proxy.port < 1024 || proxy.port > 65535 || !Array.isArray(proxy.routes)) throw new Error('Invalid shared listener') }
     for (const [name, value] of Object.entries(bundle.config.mcpAuth ?? {})) { validateName(name); validateName(value.secretRef); if (typeof value.enabled !== 'boolean') throw new Error('Invalid MCP auth setting') }
     for (const [name, value] of Object.entries(bundle.config.workspaceAccounts ?? {})) { validateWorkspaceAccount(name); validateName(value.secretRef); if (typeof bundle.credentials[value.secretRef] !== 'string') throw new Error('Missing shared Workspace credential') }
     if (bundle.config.workspaceOAuth) { validateName(bundle.config.workspaceOAuth.secretRef); if (!/^[a-z][a-z0-9-]{4,62}[a-z0-9]$/.test(bundle.config.workspaceOAuth.projectId) || typeof bundle.credentials[bundle.config.workspaceOAuth.secretRef] !== 'string') throw new Error('Invalid shared Google OAuth project') }
@@ -164,6 +189,8 @@ export class Sharing {
       let candidate = path.join(skillRoot, relative)
       while (candidate !== skillRoot) { if ((await fs.lstat(candidate).catch(() => null))?.isSymbolicLink()) throw new Error('A local skill link prevents safe import'); candidate = path.dirname(candidate) }
     }
+    // Import writes one folder: bring parked skills back first; the next sync parks them again.
+    for (const warning of await this.store.placeSkills([])) throw new Error(warning)
     const backup = path.join(this.store.data, 'shared-imports', randomUUID())
     await fs.mkdir(backup, { recursive: true })
     for (const name of ['manager.json', 'endpoints.custom.json', 'mcp.json', 'AGENTS.md']) { const value = await readText(path.join(this.store.pool, name)); if (value !== null) await atomicWrite(path.join(backup, name), value) }

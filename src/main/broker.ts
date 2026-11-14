@@ -2,7 +2,9 @@ import { APP_VERSION } from '../shared/version'
 import readline from 'node:readline'
 import path from 'node:path'
 import os from 'node:os'
-import { openDb, purgeScanData } from './db'
+import { kvGet, kvSet, openDb, purgeScanData } from './db'
+import { Updater } from './updater'
+import type { UpdatePrefs } from '../shared/update'
 import { appDbPath, userDataPath } from './paths'
 import { getSettings, saveSettings } from './settings'
 import { getAnalytics, getHistory, getOverview, getProviderDetail } from './queries'
@@ -26,6 +28,8 @@ const native = (method: string, value: string): Promise<string> => new Promise((
 })
 const db = openDb(appDbPath()), offline = process.env.AIU_OFFLINE === '1'
 const scanner = new Scanner(db, () => getSettings(db), () => event('data:updated'))
+const updater = new Updater({ installed: APP_VERSION, dataDir: userDataPath(), prefs: { read: () => kvGet<UpdatePrefs>(db, 'update.prefs') ?? null, write: prefs => kvSet(db, 'update.prefs', prefs) },
+  notify: () => event('update:updated'), busy: () => manager.activity() })
 const quota = offline ? null : startQuotaService(db, APP_VERSION, () => event('data:updated'))
 const pool = process.env.AIU_POOL || path.join(os.homedir(), '.agents')
 const manager = new ManagerService(pool, userDataPath(), process.env.AIU_HOME || os.homedir(), native, () => event('manager:updated'))
@@ -54,6 +58,13 @@ async function dispatch(method: string, params: any): Promise<any> {
     case 'pricing:catalog': return priceCatalog((db.prepare('SELECT DISTINCT model FROM usage_events WHERE model IS NOT NULL').all() as Array<{ model: string }>).map(row => row.model))
     case 'pricing:source': if (!priceCatalog().some(price => price.sourceUrl === params)) throw new Error('Unknown pricing source'); return native('open-url', params)
     case 'quota:get': return getQuotaSnapshot(db)
+    case 'update:status': return updater.status()
+    case 'update:check': return updater.check()
+    case 'update:channel': return updater.setChannel(params)
+    case 'update:autoCheck': return updater.setAutoCheck(!!params)
+    case 'update:download': return updater.download()
+    case 'update:install': return updater.install()
+    case 'update:releases': return native('open-url', updater.status().releasesUrl)
     case 'tray:quotas': {
       const settings = getSettings(db), cards = makeQuotaCards(getQuotaSnapshot(db), settings, getOverview(db, settings, scanner.status())), now = Date.now()
       return settings.pinnedQuotas.map(id => cards.find(card => card.id === id)).filter(card => !!card).map(card => ({ id: card.id, text: trayQuotaLine(card, now) }))
@@ -85,6 +96,8 @@ input.on('line', line => {
 input.on('close', () => { void shutdown() })
 process.on('SIGTERM', () => { void shutdown() })
 process.on('SIGINT', () => { void shutdown() })
+// One update check shortly after launch (at most daily, if enabled); no polling loop.
+if (!offline) { void updater.cleanup(); setTimeout(() => void updater.checkOnLaunch(), 20_000).unref() }
 void ready.then(() => {
   if (!managerError && !process.env.AIU_PROFILE && !process.env.AIU_HOME) {
     // Re-register at every start: an entry written by an older install path (or from

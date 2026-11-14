@@ -9,7 +9,7 @@ export interface ProxyRoute {
   family?: 'sonnet' | 'opus' | 'haiku'; maxInputTokens?: number
 }
 export interface ProxyRecord {
-  id: string; name: string; port: number; autostart: boolean; clientSecretRef: string; routes: ProxyRoute[]; authMode?: 'none' | 'key'; managedEndpointId?: string
+  id: string; name: string; port: number; autostart: boolean; clientSecretRef?: string; routes: ProxyRoute[]; authMode?: 'none' | 'key'; managedEndpointId?: string
 }
 export type AgentId = 'claude' | 'claude-desktop' | 'codex' | 'gemini' | 'antigravity' | 'cursor' | 'cline' | 'opencode' | 'zcode' | 'copilot'
 export interface AgentProfile {
@@ -22,6 +22,22 @@ export interface ManagerConfig {
   syncNotifications?: boolean; mcpAuth?: Record<string, { enabled: boolean; secretRef: string }>
   workspaceAccounts?: Record<string, { secretRef: string; projectId?: string; email?: string }>
   workspaceOAuth?: { secretRef: string; projectId: string }
+  /** Library entries kept but synced to no agent. */
+  disabledMcp?: string[]; disabledSkills?: string[]
+  /** MCPs whose relayed tool list is replaced by a search + call pair for eager clients. */
+  compactMcp?: string[]
+  /** Warn when an agent's estimated customization context exceeds this many tokens. */
+  contextBudget?: number
+}
+/** Agents that load MCP tool schemas on demand themselves; compact mode and eager cost do not apply. */
+export const LAZY_TOOL_AGENTS: readonly AgentId[] = ['claude', 'antigravity']
+export const COMPACT_SUFFIX = '@compact'
+export interface McpMetrics {
+  /** Tool count and serialized schema size from the last tools/list seen. */
+  tools?: number; schemaBytes?: number; measuredAt?: number
+  calls: number; errors: number; lastCall?: number; byTool: Record<string, number>
+  /** When counting started; idle suggestions wait until a full window has been observed. */
+  trackedSince?: number
 }
 export interface ProxyStatus { id: string; state: 'stopped' | 'running' | 'error'; port: number; requests: number; error?: string }
 export interface AgentInfo { id: AgentId; name: string; installed: boolean; configPath: string; skillControl: 'native' | 'shared' | 'none'; endpointSupport: boolean; restartRequired: boolean; note?: string }
@@ -43,6 +59,7 @@ export interface ManagerSnapshot {
   sharing: SharingStatus; lastSync?: SyncResult; secrets: string[]; logs: string[]; instructions: string; antigravity?: AntigravityStatus
   auth?: Record<string, string>; appliedProfiles?: Record<string, string>; instructionSource?: string; deviceMcp?: Record<string, McpDeviceStatus>; remoteMcp?: Record<string, McpDeviceStatus>; workspace?: WorkspaceStatus
   install?: { sandboxed: boolean; path?: string }
+  mcpMetrics?: Record<string, McpMetrics>
 }
 export interface InstallPreview { id: string; kind: 'skill' | 'mcp'; source: string; name: string; description: string; files: string[]; command?: string; args?: string[]; choices?: string[] }
 export interface EndpointTest { ok: boolean; latencyMs: number; models: string[]; error?: string }
