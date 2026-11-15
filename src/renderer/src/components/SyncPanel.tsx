@@ -16,6 +16,10 @@ function ChangeRow({ change, act }: { change: SyncChange; act: Action }) {
       <strong>{change.target}</strong>
       <code title={change.path}>{change.path}</code>
       <p>{change.conflict ? 'Edited outside AI Usage since the last sync. Nothing is written to it until you decide.' : change.summary}</p>
+      {change.conflict && !!change.details?.length && <div className="sync-details">
+        <span>What changed in the file</span>
+        <ul>{change.details.map(line => <li key={line}>{line}</li>)}</ul>
+      </div>}
     </div>
     {change.conflict
       ? <Btn onClick={() => void act(() => api().openPath(change.path))}><ExternalLink size={13} />Open file</Btn>
@@ -63,9 +67,9 @@ export function SyncPanel({ data, act, busy }: { data: ManagerSnapshot; act: Act
         <h3 className="sync-group sync-group-attention">Needs your decision ({attention.length})</h3>
         <div className="sync-list">{attention.map(c => <ChangeRow key={c.path} change={c} act={act} />)}</div>
         <div className="sync-decision">
-          <p><strong>Keep the outside edits</strong> accepts {attention.length === 1 ? 'the file' : 'these files'} as {attention.length === 1 ? 'it is' : 'they are'} now and checks again. You then see exactly what AI Usage will write before anything changes. Open a file first if you want to look at it.</p>
+          <p><strong>Keep the outside edits</strong> accepts the {attention.length === 1 ? 'change' : 'changes'} listed above and lifts the pause. You then see what AI Usage will write before anything is updated. <strong>Not now</strong> closes this review and leaves sync paused.</p>
           <div className="manager-actions">
-            <Btn variant="primary" disabled={busy} onClick={() => void act(async () => setPreview(await api().adoptSyncEdits(preview.id)))}>Keep the outside edits and continue</Btn>
+            <Btn variant="primary" disabled={busy} onClick={() => void act(async () => setPreview(await api().adoptSyncEdits(preview.id)), 'Outside edits kept. Check what will be written, then update.')}>Keep the outside edits and continue</Btn>
             <Btn variant="ghost" disabled={busy} onClick={() => setPreview(null)}>Not now</Btn>
           </div>
         </div>

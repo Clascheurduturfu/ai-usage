@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/overview.svg" alt="AI Usage: your AI control room, with capacity cards and a shared agent library" width="100%" />
   <br /><br />
-  <a href="https://github.com/Clascheurduturfu/ai-usage/releases"><img alt="Version 1.0.0-rc.4" src="https://img.shields.io/badge/version-1.0.0--rc.4-83dfb0?style=flat-square" /></a>
+  <a href="https://github.com/Clascheurduturfu/ai-usage/releases"><img alt="Version 1.0.0-rc.5" src="https://img.shields.io/badge/version-1.0.0--rc.5-83dfb0?style=flat-square" /></a>
   <img alt="Windows and macOS" src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS-7ca7ff?style=flat-square" />
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-c7bbff?style=flat-square" /></a>
   <img alt="Local usage data, optional encrypted sharing" src="https://img.shields.io/badge/data-local%20%C2%B7%20optional%20sharing-e4c990?style=flat-square" />

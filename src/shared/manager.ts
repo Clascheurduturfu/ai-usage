@@ -47,7 +47,7 @@ export interface McpSource { kind: 'npm' | 'blender' | 'workspace' | 'workspace-
 export interface McpRecord { name: string; transport: 'stdio' | 'http'; command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string>; aiUsage?: { source: McpSource } }
 export interface McpDeviceStatus { state: string; detail: string; canPrepare: boolean; tools?: number; checkedAt?: number; clients?: number; workers?: number }
 export interface McpSetupPreview { id: string; createdAt: number; platform: string; entries: Array<{ name: string; source: McpSource; action: string; note?: string }> }
-export interface SyncChange { target: string; path: string; beforeHash: string; afterHash: string; changed: boolean; conflict: boolean; summary: string; warning?: string }
+export interface SyncChange { target: string; path: string; beforeHash: string; afterHash: string; changed: boolean; conflict: boolean; summary: string; warning?: string; /** For a conflict: what changed in the file since the last sync, in plain words. */ details?: string[] }
 export interface SyncPreview { id: string; changes: SyncChange[]; warnings: string[]; createdAt: number }
 export interface SyncResult { changed: number; conflicts: string[]; backupId?: string; warnings: string[] }
 export interface MigrationPreview { providers: number; protectedKeys: number; gateways: number; routes: number; profiles: number; sources: string[]; alreadyImported: boolean }

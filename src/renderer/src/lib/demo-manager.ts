@@ -68,7 +68,7 @@ export function demoManager(): ManagerSnapshot {
 const syncPreview = (conflict: boolean): SyncPreview => ({ id: 'sample', createdAt: Date.now(), warnings: [], changes: [
   ['Claude Code', 'C:/Sample/.claude.json', false], ['Claude Code instructions', 'C:/Sample/.claude/CLAUDE.md', false],
   ['Claude Desktop', 'C:/Sample/AppData/Roaming/Claude/claude_desktop_config.json', conflict], ['Codex instructions', 'C:/Sample/.codex/AGENTS.md', false]
-].map(([target, path, c]) => ({ target: target as string, path: path as string, beforeHash: 'a', afterHash: 'b', changed: true, conflict: c as boolean, summary: String(target).endsWith('instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' })) })
+].map(([target, path, c]) => ({ target: target as string, path: path as string, beforeHash: 'a', afterHash: 'b', changed: true, conflict: c as boolean, details: c ? ['MCP server “browser”: command changed from "npx" to "node"; args changed (2 → 3 items)', 'MCP server “memory” was removed from the file'] : undefined, summary: String(target).endsWith('instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' })) })
 export function demoManagerApi(): Partial<AiuApi> {
   const done = async (): Promise<void> => undefined
   // Toggles change this in-memory copy so the preview responds like the real app.

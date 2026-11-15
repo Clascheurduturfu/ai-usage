@@ -8,6 +8,7 @@ import { ManagerStore, atomicWrite, hash, readText, validatePathComponent } from
 import { renderCodexToml, renderGeminiServers } from './vendor/renderers'
 import { McpPreparation } from './mcp-preparation'
 import { AntigravityClient } from './antigravity-client'
+import { describeOwnedEdits, describeTextEdits } from './sync-diff'
 
 const definitions: Array<[AgentId, string, string, AgentInfo['skillControl']]> = [
   ['claude', 'Claude Code', '.claude.json', 'native'], ['claude-desktop', 'Claude Desktop', 'AppData/Roaming/Claude/claude_desktop_config.json', 'none'],
@@ -261,8 +262,19 @@ export class SyncEngine {
     }
     const changes = await Promise.all(files.map(async f => {
       let conflict = !!f.unmanagedConflict || (!!ledger.hashes[f.file] && ledger.hashes[f.file] !== hash(f.before ?? ''))
-      if (conflict && !f.encoding && !f.unmanagedConflict) { const baseline = await this.baseline(f.file, ledger); if (baseline !== undefined) try { conflict = await this.owned(baseline, f.file, managed) !== await this.owned(f.before ?? '', f.file, managed) } catch { /* retain conflict */ } }
-      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, summary: f.encoding ? 'Copy or remove managed skill assets; preserve native skills' : 'Update managed entries; preserve unrelated settings' }
+      let details: string[] | undefined
+      if (conflict && !f.encoding && !f.unmanagedConflict) {
+        const baseline = await this.baseline(f.file, ledger)
+        if (baseline === undefined) details = ['AI Usage has no copy of what it last wrote here, so it cannot show the exact edit.']
+        else if (!/\.(json|toml)$/.test(f.file)) details = describeTextEdits(baseline, f.before ?? '')
+        else try {
+          const was = await this.owned(baseline, f.file, managed), now = await this.owned(f.before ?? '', f.file, managed)
+          conflict = was !== now
+          if (conflict) details = describeOwnedEdits(was, now)
+        } catch { details = ['The file cannot be read as valid settings right now, for example a missing comma or bracket. Open it to check.'] }
+      } else if (conflict && f.unmanagedConflict) details = ['This file already existed before AI Usage ever synced it. Syncing replaces its content.']
+      else if (conflict && f.encoding) details = ['A file inside a synced skill folder was changed.']
+      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, details: conflict ? details : undefined, summary: f.encoding ? 'Copy or remove managed skill assets; preserve native skills' : 'Update managed entries; preserve unrelated settings' }
     }))
     const dto: SyncPreview = { id: randomUUID(), createdAt: Date.now(), warnings, changes }
     this.previews.clear(); this.previews.set(dto.id, { dto, files }); return dto
