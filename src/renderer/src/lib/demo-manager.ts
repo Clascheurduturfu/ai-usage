@@ -1,5 +1,5 @@
 import type { AiuApi } from '../../../shared/api'
-import type { ManagerSnapshot } from '../../../shared/manager'
+import type { ManagerSnapshot, SyncPreview } from '../../../shared/manager'
 
 // Fictional shared-library state covering each MCP status the card can show.
 const now = Date.now()
@@ -53,6 +53,7 @@ export function demoManager(): ManagerSnapshot {
     ],
     secrets: ['mcp-cloud-tools-auth', 'mcp-cloud-logs-auth', 'mcp-cloud-builds-auth'],
     sharing: { folder: 'C:/Sample/Shared', enabled: true, unlocked: true, pending: 0 },
+    lastSync: { changed: 0, conflicts: ['C:/Sample/AppData/Roaming/Claude/claude_desktop_config.json'], warnings: [] },
     auth: { 'cloud-tools': 'Token refresh failed: HTTP 400 (invalid_grant) · Reconnect required', 'cloud-logs': 'Saved sign-in', 'cloud-builds': 'Token refresh failed: HTTP 502 (server_error) · Sign-in kept, retry shortly', 'cloud-docs': 'Public server · no sign-in needed', 'partner-api': 'Sign-in required' },
     remoteMcp: { 'cloud-logs': { state: 'Connected', detail: '2 clients connected', clients: 2, workers: 0, canPrepare: false }, 'cloud-docs': { state: 'Connection verified', detail: '2 tools listed.', tools: 2, checkedAt: now - 90_000, canPrepare: false } },
     deviceMcp: {
@@ -64,6 +65,10 @@ export function demoManager(): ManagerSnapshot {
     }
   }
 }
+const syncPreview = (conflict: boolean): SyncPreview => ({ id: 'sample', createdAt: Date.now(), warnings: [], changes: [
+  ['Claude Code', 'C:/Sample/.claude.json', false], ['Claude Code instructions', 'C:/Sample/.claude/CLAUDE.md', false],
+  ['Claude Desktop', 'C:/Sample/AppData/Roaming/Claude/claude_desktop_config.json', conflict], ['Codex instructions', 'C:/Sample/.codex/AGENTS.md', false]
+].map(([target, path, c]) => ({ target: target as string, path: path as string, beforeHash: 'a', afterHash: 'b', changed: true, conflict: c as boolean, summary: String(target).endsWith('instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' })) })
 export function demoManagerApi(): Partial<AiuApi> {
   const done = async (): Promise<void> => undefined
   // Toggles change this in-memory copy so the preview responds like the real app.
@@ -77,6 +82,13 @@ export function demoManagerApi(): Partial<AiuApi> {
     setContextBudget: async (tokens: number) => { state.config.contextBudget = tokens },
     sharingSettings: async () => ({ folder: 'C:/Sample/Shared', passphrase: '' }), sharingFileExists: async () => true,
     checkMcp: async name => ({ state: 'Connection verified', detail: `${name}: 4 tools listed.`, tools: 4, checkedAt: Date.now(), canPrepare: false }),
+    // Sample sync flow: one file edited outside the app, then adopted, then applied.
+    previewSync: async () => syncPreview(!!state.lastSync?.conflicts.length),
+    adoptSyncEdits: async () => { state.lastSync = { changed: 0, conflicts: [], warnings: [] }; return syncPreview(false) },
+    applySync: async () => (state.lastSync = { changed: 4, conflicts: [], backupId: 'sample', warnings: [] }),
+    restoreSync: async () => (state.lastSync = { changed: 0, conflicts: [], warnings: [] }),
+    setAutoSync: async (enabled: boolean) => { state.config.autoSync = enabled },
+    setSyncNotifications: async (enabled: boolean) => { state.config.syncNotifications = enabled },
     loginMcp: done, logoutMcp: done, stopMcp: done, resumeMcp: done, deleteMcp: done
   } as Partial<AiuApi>
 }
