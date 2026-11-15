@@ -44,8 +44,9 @@ function FolderEditor({
 }) {
   const [name, setName] = useState(folder?.name ?? '')
   const [selected, setSelected] = useState<Set<string>>(() => {
-    const set = new Set(folder?.skills ?? [])
-    if (initialSkill) set.add(initialSkill)
+    const valid = new Set(skills.map(s => s.name))
+    const set = new Set((folder?.skills ?? []).filter(name => valid.has(name)))
+    if (initialSkill && valid.has(initialSkill)) set.add(initialSkill)
     return set
   })
   const [filter, setFilter] = useState('')

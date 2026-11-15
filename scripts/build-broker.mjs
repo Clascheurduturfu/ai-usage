@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { buildEnvironment } from './build-env.mjs'
 import { build } from 'esbuild'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 const manifest = JSON.parse(await fs.readFile('package.json', 'utf8'))
@@ -25,10 +27,54 @@ await fs.writeFile(path.join(output, 'package.json'), JSON.stringify({ type: 'mo
 await fs.mkdir('src-tauri/binaries', { recursive: true })
 const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc.exe'
   : process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'
-await fs.copyFile(process.execPath, `src-tauri/binaries/aiu-node-${target}`)
-if (process.platform === 'darwin') {
-  await fs.chmod(`src-tauri/binaries/aiu-node-${target}`, 0o755)
+const nodeTarget = `src-tauri/binaries/aiu-node-${target}`
+
+function nonSystemDylibs(binaryPath) {
+  const output = execFileSync('otool', ['-L', binaryPath], { encoding: 'utf8' })
+  return output
+    .split(/\r?\n/)
+    .slice(1)
+    .map(line => line.trim().split(' (')[0])
+    .filter(lib => lib && !lib.startsWith('/System/Library/') && !lib.startsWith('/usr/lib/'))
 }
+
+async function bundleMacNode(destination) {
+  if (nonSystemDylibs(process.execPath).length === 0) {
+    await fs.copyFile(process.execPath, destination)
+    await fs.chmod(destination, 0o755)
+    return
+  }
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  const distName = `node-${process.version}-darwin-${arch}`
+  const tarName = `${distName}.tar.gz`
+  const baseUrl = `https://nodejs.org/dist/${process.version}`
+  const sumsText = await (await fetch(`${baseUrl}/SHASUMS256.txt`)).text()
+  const expectedLine = sumsText.split(/\r?\n/).find(line => line.endsWith(`  ${tarName}`))
+  const expectedSha = expectedLine?.split(/\s+/)[0]
+  if (!expectedSha) throw new Error(`Missing official SHA-256 entry for ${tarName} (${baseUrl})`)
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aiu-node-'))
+  try {
+    const archivePath = path.join(tmpDir, tarName)
+    const response = await fetch(`${baseUrl}/${tarName}`)
+    if (!response.ok) throw new Error(`Failed to download ${tarName}: HTTP ${response.status}`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const actualSha = createHash('sha256').update(bytes).digest('hex')
+    if (actualSha !== expectedSha) throw new Error(`SHA-256 mismatch for ${tarName}: expected ${expectedSha}, got ${actualSha}`)
+    await fs.writeFile(archivePath, bytes)
+    execFileSync('tar', ['-xzf', archivePath, '-C', tmpDir, `${distName}/bin/node`])
+    await fs.copyFile(path.join(tmpDir, distName, 'bin', 'node'), destination)
+    await fs.chmod(destination, 0o755)
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  }
+
+  const remaining = nonSystemDylibs(destination)
+  if (remaining.length) throw new Error(`Bundled macOS node still depends on non-system libraries: ${remaining.join(', ')}`)
+}
+
+if (process.platform === 'darwin') await bundleMacNode(nodeTarget)
+else await fs.copyFile(process.execPath, nodeTarget)
 // Device preparation works even when Node and npm are absent from the user's PATH.
 const npmCandidates = process.platform === 'darwin'
   ? [

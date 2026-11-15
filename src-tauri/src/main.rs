@@ -363,39 +363,118 @@ fn open_window(app: &tauri::AppHandle) {
     }
 }
 
+#[derive(Default)]
+struct PopoverState(Mutex<PopoverTracker>);
+
+#[derive(Default)]
+struct PopoverTracker {
+    generation: u64,
+    closing: bool,
+    last_blur_close: Option<std::time::Instant>,
+}
+
+fn destroy_popover_if_current(app: &tauri::AppHandle, generation: u64) {
+    let popover = app.state::<PopoverState>();
+    let mut state = popover.0.lock().unwrap();
+    if state.generation != generation { return; }
+    state.closing = false;
+    drop(state);
+    if let Some(window) = app.get_webview_window("quota-popover") { let _ = window.destroy(); }
+}
+
+fn begin_close_popover(app: &tauri::AppHandle, from_blur: bool) {
+    let generation = {
+        let popover = app.state::<PopoverState>();
+        let mut state = popover.0.lock().unwrap();
+        if from_blur { state.last_blur_close = Some(std::time::Instant::now()); }
+        if state.closing { return; }
+        state.closing = true;
+        state.generation
+    };
+    let _ = app.emit_to("quota-popover", "popover:closing", generation);
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(240)).await;
+        destroy_popover_if_current(&handle, generation);
+    });
+}
+
 #[tauri::command]
 fn open_dashboard(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("quota-popover") { let _ = window.hide(); }
+    if app.get_webview_window("quota-popover").is_some() { begin_close_popover(&app, false); }
     open_window(&app);
 }
 
 #[tauri::command]
+fn show_popover(app: tauri::AppHandle, generation: u64) {
+    let should_show = {
+        let popover = app.state::<PopoverState>();
+        let state = popover.0.lock().unwrap();
+        state.generation == generation && !state.closing
+    };
+    if should_show {
+        if let Some(window) = app.get_webview_window("quota-popover") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+#[tauri::command]
 fn hide_popover(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("quota-popover") { let _ = window.hide(); }
+    if app.get_webview_window("quota-popover").is_some() { begin_close_popover(&app, false); }
+}
+
+#[tauri::command]
+fn finish_close_popover(app: tauri::AppHandle, generation: u64) {
+    destroy_popover_if_current(&app, generation);
 }
 
 fn toggle_popover(app: &tauri::AppHandle, position: tauri::PhysicalPosition<f64>) {
-    if let Some(window) = app.get_webview_window("quota-popover") {
-        if window.is_visible().unwrap_or(false) { let _ = window.hide(); return; }
-        // Destroy the hidden view before reopening so it doesn't keep timers alive.
-        let _ = window.destroy();
-    }
-    if let Ok(window) = WebviewWindowBuilder::new(app, "quota-popover", WebviewUrl::App("index.html?popover=1".into()))
-        .title("AI Usage · Capacity").inner_size(390.0, 580.0).decorations(false).resizable(false)
-        .always_on_top(true).skip_taskbar(true).visible(false).build() {
+    let generation = {
+        let popover = app.state::<PopoverState>();
+        let mut state = popover.0.lock().unwrap();
+        if let Some(window) = app.get_webview_window("quota-popover") {
+            if !state.closing && window.is_visible().unwrap_or(false) {
+                drop(state);
+                drop(popover);
+                begin_close_popover(app, false);
+                return;
+            }
+            if state.closing { return; }
+            let _ = window.destroy();
+        } else if state.last_blur_close.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(280)) {
+            state.last_blur_close = None;
+            return;
+        }
+        state.generation += 1;
+        state.closing = false;
+        state.last_blur_close = None;
+        state.generation
+    };
+    let url = format!("index.html?popover=1&gen={}", generation);
+    if let Ok(window) = WebviewWindowBuilder::new(app, "quota-popover", WebviewUrl::App(url.into()))
+        .title("AI Usage · Capacity").inner_size(414.0, 608.0).decorations(false).resizable(false)
+        .transparent(true).shadow(false).always_on_top(true).skip_taskbar(true).visible(false).build() {
         let scale = window.scale_factor().unwrap_or(1.0);
-        let mut x = position.x - 195.0 * scale;
-        let mut y = position.y + 16.0 * scale;
+        let width = 414.0;
+        let height = 608.0;
+        let mut x = position.x - (width * 0.5) * scale;
+        let mut y = position.y + 6.0 * scale;
         if let Some(monitor) = window.available_monitors().unwrap_or_default().iter().find(|m| {
             let p = m.position(); let s = m.size(); position.x >= p.x as f64 && position.x < (p.x as i64 + s.width as i64) as f64 && position.y >= p.y as f64 && position.y < (p.y as i64 + s.height as i64) as f64
         }) {
             let p = monitor.position(); let s = monitor.size();
-            let right = (p.x as f64 + s.width as f64 - 390.0 * scale - 8.0).max(p.x as f64 + 8.0);
-            let bottom = (p.y as f64 + s.height as f64 - 580.0 * scale - 8.0).max(p.y as f64 + 8.0);
-            x = x.clamp(p.x as f64 + 8.0, right); y = y.clamp(p.y as f64 + 8.0, bottom);
+            let right = (p.x as f64 + s.width as f64 - width * scale - 2.0).max(p.x as f64 + 2.0);
+            let bottom = (p.y as f64 + s.height as f64 - height * scale - 2.0).max(p.y as f64 + 2.0);
+            x = x.clamp(p.x as f64 + 2.0, right); y = y.clamp(p.y as f64 + 2.0, bottom);
         }
         let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
-        let _ = window.show(); let _ = window.set_focus();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            show_popover(handle, generation);
+        });
     }
 }
 
@@ -537,10 +616,10 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build())
-        .invoke_handler(tauri::generate_handler![mcp_control, rpc, pick_folder, pick_json_file, open_path, open_dashboard, hide_popover])
+        .invoke_handler(tauri::generate_handler![mcp_control, rpc, pick_folder, pick_json_file, open_path, open_dashboard, show_popover, hide_popover, finish_close_popover])
         .on_window_event(|window, event| {
             if window.label() == "quota-popover" {
-                if matches!(event, tauri::WindowEvent::Focused(false)) { let _ = window.destroy(); }
+                if matches!(event, tauri::WindowEvent::Focused(false)) { begin_close_popover(window.app_handle(), true); }
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -561,6 +640,7 @@ fn main() {
             { app.set_activation_policy(tauri::ActivationPolicy::Accessory); app.set_dock_visibility(false); }
             app.manage(SupervisorControl::default());
             app.manage(TrayQuotaLines::default());
+            app.manage(PopoverState::default());
             let broker = start_broker(app.handle())?;
             app.manage(broker);
             // Only the primary instance reaches setup, so the Explorer hidden flag is read here.
