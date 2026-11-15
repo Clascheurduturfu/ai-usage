@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { ManagerService } from '../src/main/manager/service'
+import { McpPreparation, mcpSource, portableMcp } from '../src/main/manager/mcp-preparation'
 import { atomicWrite } from '../src/main/manager/storage'
 
 const roots: string[] = []
@@ -52,5 +53,24 @@ it('drops a remote sign-in when the server URL changes', async () => {
     const result = await service.dispatch('mcp:save', { server: { name: 'remote', transport: 'http', url: 'https://two.example/mcp', headers: {} }, oldName: 'remote' })
     expect(service.store.config.mcpAuth?.remote).toBeUndefined(); expect(service.vault.refs()).not.toContain('remote-auth')
     expect(result.warnings.join(' ')).toContain('sign in again')
+  } finally { await service.auth.close() }
+})
+
+it('normalizes cua-driver and chrome-devtools definitions into portable @device sources', async () => {
+  const portable = portableMcp({
+    'cua-driver': { command: 'cua-driver', args: ['mcp'], env: {} },
+    'chrome-devtools': { command: 'npx', args: ['-y', 'chrome-devtools-mcp@1.13.0', '--autoConnect'], env: {} }
+  })
+  expect(portable['cua-driver']).toEqual({ command: '@device', args: [], aiUsage: { source: { kind: 'cua-driver', version: '0.52.0', args: ['mcp'] } } })
+  expect(portable['chrome-devtools']).toEqual({ command: '@device', args: [], aiUsage: { source: { kind: 'npm', package: 'chrome-devtools-mcp', version: '1.13.0', args: ['--autoConnect'] } } })
+  expect(() => mcpSource('cua-driver', { aiUsage: { source: { kind: 'cua-driver', version: '9.9.9' } } })).toThrow('unsupported installation source')
+})
+
+it('marks @device cua-driver as prepare-capable when no receipt exists yet', async () => {
+  const { service } = await fixture({ 'cua-driver': { command: '@device', args: [], aiUsage: { source: { kind: 'cua-driver', version: '0.52.0', args: ['mcp'] } } } })
+  try {
+    const prep = new McpPreparation(service.store, path.dirname(service.store.pool))
+    const statuses = await prep.statuses()
+    expect(statuses['cua-driver']).toMatchObject({ state: 'Needs setup', canPrepare: true })
   } finally { await service.auth.close() }
 })

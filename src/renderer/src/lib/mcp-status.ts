@@ -5,7 +5,7 @@ export type McpTone = 'ok' | 'idle' | 'busy' | 'warn' | 'error' | 'off'
 export type McpPrimary = 'check' | 'signIn' | 'reconnect' | 'resume' | 'prepare' | 'manage' | 'help'
 export interface McpStatus { tone: McpTone; label: string; detail: string; primary?: McpPrimary }
 
-const SETUP_HELP = new Set(['aws-mcp', 'google-workspace', 'computer-use', 'blender', 'playwright-cdp'])
+const SETUP_HELP = new Set(['aws-mcp', 'google-workspace', 'computer-use', 'cua-driver', 'blender', 'playwright-cdp'])
 export const hasSetupHelp = (name: string): boolean => SETUP_HELP.has(name)
 
 const ago = (time?: number): string => {

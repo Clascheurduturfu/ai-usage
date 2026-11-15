@@ -51,7 +51,7 @@ export interface ProxyStatus { id: string; state: 'stopped' | 'running' | 'error
 export interface AgentInfo { id: AgentId; name: string; installed: boolean; configPath: string; skillControl: 'native' | 'shared' | 'none'; endpointSupport: boolean; restartRequired: boolean; note?: string }
 export interface AntigravityStatus { state: string; detail: string; skills: number; expected?: number; libraryCount?: number; servers: Array<{ name: string; state: string; tools: number; detail?: string }>; checkedAt: number }
 export interface SkillInfo { name: string; description: string; path: string; valid: boolean; issue?: string }
-export interface McpSource { kind: 'npm' | 'blender' | 'workspace' | 'workspace-gws' | 'aws'; version: string; package?: string; revision?: string; args?: string[] }
+export interface McpSource { kind: 'npm' | 'blender' | 'workspace' | 'workspace-gws' | 'aws' | 'cua-driver'; version: string; package?: string; revision?: string; args?: string[] }
 export interface McpRecord { name: string; transport: 'stdio' | 'http'; command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string>; aiUsage?: { source: McpSource } }
 export interface McpDeviceStatus { state: string; detail: string; canPrepare: boolean; tools?: number; checkedAt?: number; clients?: number; workers?: number }
 export interface McpSetupPreview { id: string; createdAt: number; platform: string; entries: Array<{ name: string; source: McpSource; action: string; note?: string }> }

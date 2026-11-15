@@ -4,8 +4,10 @@ import path from 'node:path'
 import { DatabaseSync as Database } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  antigravityBinaryCandidates,
   extractAntigravityRefreshToken,
   findAntigravityClientSecret,
+  geminiBucketsFromModels,
   resetClientSecretCache
 } from '../src/main/antigravity-quota'
 import { findOpenRouterKey } from '../src/main/openrouter-quota'
@@ -204,5 +206,32 @@ describe('Android sync snapshot builder', () => {
   it('omits missing cards', () => {
     const snapshot = buildSyncSnapshot({ chatgpt: null, mistral: null, antigravity: null, openrouter: null }, '1.2.0')
     expect(snapshot['cards']).toEqual([])
+  })
+})
+
+describe('geminiBucketsFromModels', () => {
+  it('combines matching Pro and Flash quotas and ignores non-Gemini models', () => {
+    const buckets = geminiBucketsFromModels([
+      { id: 'claude-sonnet-4-6', remainingFraction: 0.2 },
+      { id: 'gemini-3.1-pro-high', remainingFraction: 0.4, resetTime: '2026-11-15T22:50:00Z' },
+      { id: 'gemini-3-flash', remainingFraction: 0.4, resetTime: '2026-11-15T22:50:00Z' }
+    ])
+    expect(buckets).toHaveLength(1)
+    expect(buckets[0]).toMatchObject({ id: 'gemini', label: 'Gemini models', remainingFraction: 0.4 })
+  })
+
+  it('splits Gemini Pro and Flash when quotas differ, including RPC enum models with labels', () => {
+    const buckets = geminiBucketsFromModels([
+      { id: 'MODEL_PLACEHOLDER_M37', label: 'Gemini 3.1 Pro (High)', remainingFraction: 0.25, resetTime: '2026-11-15T23:00:00Z' },
+      { id: 'MODEL_PLACEHOLDER_M18', label: 'Gemini 3 Flash', remainingFraction: 0.85, resetTime: '2026-11-15T22:30:00Z' }
+    ])
+    expect(buckets.map((b) => [b.id, b.remainingFraction])).toEqual([
+      ['gemini-pro', 0.25],
+      ['gemini-flash', 0.85]
+    ])
+  })
+
+  it('includes installed Antigravity language_server binary candidates', () => {
+    expect(antigravityBinaryCandidates().some((p) => p.includes('language_server'))).toBe(true)
   })
 })

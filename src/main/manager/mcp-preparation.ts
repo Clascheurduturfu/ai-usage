@@ -1,10 +1,11 @@
 import { APP_VERSION } from '../../shared/version'
 import fs from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { NativeSupervisor, LaunchSpec } from './native-supervisor'
 import { ManagerStore, atomicWrite, hash, readText, validateName } from './storage'
@@ -18,7 +19,9 @@ const recipes: Record<string, McpSource> = {
   'google-workspace': { kind: 'workspace-gws', version: '0.22.5' },
   playwright: { kind: 'npm', package: '@playwright/mcp', version: '0.0.83', args: ['--isolated'] },
   'playwright-cdp': { kind: 'npm', package: '@playwright/mcp', version: '0.0.83', args: ['--cdp-endpoint', 'http://127.0.0.1:9222'] },
+  'chrome-devtools': { kind: 'npm', package: 'chrome-devtools-mcp', version: '1.13.0', args: ['--autoConnect'] },
   'computer-use': { kind: 'npm', package: 'computer-use-mcp', version: '1.8.0', args: [] },
+  'cua-driver': { kind: 'cua-driver', version: '0.52.0', args: ['mcp'] },
   rea: { kind: 'npm', package: 'rea-agents', version: '6.4.0', args: ['mcp'] },
   'aws-mcp': { kind: 'aws', version: '1.7.0', args: ['https://aws-mcp.us-east-1.api.aws/mcp', '--metadata', 'INSTALL_SOURCE=aws-cli'] }
 }
@@ -30,7 +33,7 @@ export function mcpSource(name: string, spec: any): McpSource | undefined {
     if (source.kind === 'workspace' && source.version === '0.0.8') return structuredClone(recipes['google-workspace'])
     if (source.kind === 'npm' && /^(@[\w.-]+\/)?[\w.-]+$/.test(source.package ?? '') && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(source.version) && (!source.args || (Array.isArray(source.args) && source.args.every(a => typeof a === 'string')))) return source
     const known = Object.values(recipes).find(r => r.kind === source.kind && r.version === source.version && r.revision === source.revision)
-    if (known) return { ...known, ...(source.kind === 'aws' && source.args?.every(a => typeof a === 'string') ? { args: source.args } : {}) }
+    if (known) return { ...known, ...(['aws', 'cua-driver'].includes(source.kind) && source.args?.every(a => typeof a === 'string') ? { args: source.args } : {}) }
     throw new Error(`${name}: unsupported installation source; review its definition`)
   }
   const launch = [spec.command, ...(spec.args ?? [])].join(' ').replaceAll('\\', '/')
@@ -39,11 +42,15 @@ export function mcpSource(name: string, spec: any): McpSource | undefined {
   if ((name === 'blender' && /blender[-/]mcp|mcp\/blender/.test(launch)) ||
       (name === 'google-workspace' && /google-workspace.*dist\/index\.js/.test(launch)) ||
       (/^playwright/.test(name) && launch.includes('@playwright/mcp')) ||
+      (name === 'chrome-devtools' && launch.includes('chrome-devtools-mcp')) ||
       (name === 'computer-use' && launch.includes('computer-use-mcp')) ||
+      (name === 'cua-driver' && /(?:^|\/)cua-driver(?:\.exe|\.cmd)?(?:\s|$)/i.test(launch)) ||
       (name === 'rea' && launch.includes('rea-agents')) ||
       (name === 'aws-mcp' && launch.includes('mcp-proxy-for-aws'))) {
     const source = structuredClone(recipe)
     if (name === 'playwright-cdp') { const i = spec.args?.indexOf('--cdp-endpoint'); if (i >= 0 && spec.args[i + 1]) source.args = ['--cdp-endpoint', spec.args[i + 1]] }
+    if (name === 'chrome-devtools') { const i = spec.args?.findIndex((a: string) => a.includes('chrome-devtools-mcp')); if (i >= 0) source.args = spec.args.slice(i + 1).filter((a: unknown): a is string => typeof a === 'string') }
+    if (name === 'cua-driver' && Array.isArray(spec.args) && spec.args.every((a: unknown) => typeof a === 'string')) source.args = spec.args.length ? spec.args : ['mcp']
     if (name === 'aws-mcp') { const i = spec.args?.findIndex((a: string) => a.startsWith('https://')); if (i >= 0) source.args = spec.args.slice(i) }
     return source
   }
@@ -73,8 +80,12 @@ export class McpPreparation {
   private async command(command: string): Promise<string | undefined> {
     if (!command || command === '@device' || (process.platform !== 'win32' && /^[a-z]:[/\\]|^(cmd|powershell)(\.exe)?$/i.test(command))) return undefined
     if (path.isAbsolute(command)) return await exists(command) ? command : undefined
-    const directories = [...(process.env.PATH ?? '').split(path.delimiter), path.join(this.home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin']
-    for (const dir of directories.filter(Boolean)) for (const suffix of process.platform === 'win32' ? ['', '.exe', '.cmd'] : ['']) {
+    const extra = process.platform === 'win32'
+      ? [path.join(process.env.LOCALAPPDATA ?? path.join(this.home, 'AppData/Local'), 'Programs/Cua/cua-driver/bin')]
+      : ['/Applications/CuaDriver.app/Contents/MacOS', path.join(this.home, 'Applications/CuaDriver.app/Contents/MacOS'), '/opt/homebrew/bin', '/usr/local/bin']
+    const directories = [...(process.env.PATH ?? '').split(path.delimiter), path.join(this.home, '.local/bin'), ...extra].filter(Boolean)
+    const phases = process.platform !== 'win32' ? [['']] : path.extname(command) ? [['']] : [['.exe'], ['.cmd', '.bat'], ['']]
+    for (const suffixes of phases) for (const dir of directories) for (const suffix of suffixes) {
       const candidate = path.join(dir, command + suffix); if ((await fs.stat(candidate).catch(() => null))?.isFile()) return candidate
     }
   }
@@ -212,8 +223,14 @@ export class McpPreparation {
     for (const name of selected) {
       validateName(name); const spec = master[name]; if (!spec) throw new Error('Server not found')
       const source = mcpSource(name, spec); if (!source) throw new Error(`${name}: no portable installation recipe`)
-      const reuse = source.kind === 'blender' && process.platform === 'darwin' ? await this.blender() : undefined
-      entries.push({ name, source, action: reuse ? 'Reuse existing Blender Lab launcher and addon configuration' : `Install pinned ${source.package ?? source.kind} ${source.version} in private app storage`, note: source.kind === 'aws' ? 'AWS CLI and a local authenticated profile are required. Sign-in is a separate action.' : source.kind === 'workspace-gws' ? 'Installs current gws; the AI Usage adapter uses imported Google credentials with explicit account selection.' : source.package === 'computer-use-mcp' ? 'macOS Accessibility and Screen Recording permissions may be needed. No desktop action is performed during connection checks.' : name === 'playwright-cdp' ? 'Chrome must already expose the selected local CDP port.' : source.kind === 'blender' ? 'Blender and the matching Blender Lab addon must be installed. Blender Lab server license: GPL-3.0-or-later.' : undefined })
+      const reuseBlender = source.kind === 'blender' && process.platform === 'darwin' ? await this.blender() : undefined
+      const reuseCua = source.kind === 'cua-driver' ? await this.cuaDriver(source.version) : undefined
+      entries.push({
+        name,
+        source,
+        action: reuseBlender ? 'Reuse existing Blender Lab launcher and addon configuration' : reuseCua ? `Reuse existing Cua Driver ${source.version} installation` : `Install pinned ${source.package ?? source.kind} ${source.version} in private app storage`,
+        note: source.kind === 'aws' ? 'AWS CLI and a local authenticated profile are required. Sign-in is a separate action.' : source.kind === 'workspace-gws' ? 'Installs current gws; the AI Usage adapter uses imported Google credentials with explicit account selection.' : source.kind === 'cua-driver' ? (process.platform === 'darwin' ? 'Installs CuaDriver.app if missing. Grant Accessibility and Screen Recording with "cua-driver permissions grant".' : 'Desktop UI automation uses OS permissions when tools run. No desktop action occurs during checks.') : source.package === 'computer-use-mcp' ? 'macOS Accessibility and Screen Recording permissions may be needed. No desktop action is performed during connection checks.' : name === 'playwright-cdp' ? 'Chrome must already expose the selected local CDP port.' : source.kind === 'blender' ? 'Blender and the matching Blender Lab addon must be installed. Blender Lab server license: GPL-3.0-or-later.' : undefined
+      })
     }
     const ticket: Ticket = { id: randomUUID(), createdAt: Date.now(), platform: `${process.platform}/${process.arch}`, entries, masterHash: hash(JSON.stringify(master)) }
     await atomicWrite(path.join(this.root, 'tickets', ticket.id + '.json'), JSON.stringify(ticket))
@@ -230,12 +247,90 @@ export class McpPreparation {
     for await (const bytes of response.body as any) { size += bytes.length; if (size > 200 * 1024 * 1024) throw new Error('Download exceeds 200 MiB'); chunks.push(bytes) }
     await atomicWrite(file, Buffer.concat(chunks))
   }
-  private async untar(archive: string, destination: string): Promise<void> {
+  private async extract(archive: string, destination: string, format: 'tar.gz' | 'zip' = 'tar.gz'): Promise<void> {
     const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/tar.exe') : '/usr/bin/tar'
-    const names = await this.run(tar, ['-tzf', archive])
-    if (names.split('\n').some(name => name.startsWith('/') || /^[a-z]:/i.test(name) || name.replaceAll('\\', '/').split('/').includes('..'))) throw new Error('Unsafe archive member')
-    const types = await this.run(tar, ['-tvzf', archive]); if (types.split('\n').some(line => /^[lh]/.test(line))) throw new Error('Linked archive members are unsupported')
-    await fs.mkdir(destination, { recursive: true }); await this.run(tar, ['-xzf', archive, '-C', destination])
+    const listArgs = format === 'zip' ? ['-tf', archive] : ['-tzf', archive]
+    const names = await this.run(tar, listArgs)
+    if (names.split(/\r?\n/).some(name => name.startsWith('/') || /^[a-z]:/i.test(name) || name.replaceAll('\\', '/').split('/').includes('..'))) throw new Error('Unsafe archive member')
+    const verboseArgs = format === 'zip' ? ['-tvf', archive] : ['-tvzf', archive]
+    const types = await this.run(tar, verboseArgs); if (types.split(/\r?\n/).some(line => /^[lh]/.test(line))) throw new Error('Linked archive members are unsupported')
+    await fs.mkdir(destination, { recursive: true })
+    await this.run(tar, format === 'zip' ? ['-xf', archive, '-C', destination] : ['-xzf', archive, '-C', destination])
+  }
+  private async cuaDriver(version: string): Promise<string | undefined> {
+    const candidates = new Set<string>()
+    if (process.platform === 'darwin') {
+      candidates.add('/Applications/CuaDriver.app/Contents/MacOS/cua-driver')
+      candidates.add(path.join(this.home, 'Applications/CuaDriver.app/Contents/MacOS/cua-driver'))
+    } else if (process.platform === 'win32') {
+      candidates.add(path.join(process.env.LOCALAPPDATA ?? path.join(this.home, 'AppData/Local'), 'Programs/Cua/cua-driver/bin/cua-driver.exe'))
+    }
+    const found = await this.command('cua-driver'); if (found) candidates.add(found)
+    for (const candidate of candidates) {
+      if (!await exists(candidate)) continue
+      const real = (await fs.realpath(candidate).catch(() => candidate)).replaceAll('\\', '/')
+      if (process.platform === 'darwin' && !real.endsWith('/CuaDriver.app/Contents/MacOS/cua-driver')) continue
+      if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(real)) continue
+      const out = (await this.run(real, ['--version']).catch(() => '')).trim()
+      if (out === `cua-driver ${version}` || out.startsWith(`cua-driver ${version} `) || out.startsWith(`cua-driver ${version}\n`)) return real
+    }
+  }
+  private async installCuaDriver(version: string, root: string): Promise<string> {
+    if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) throw new Error('Invalid cua-driver version')
+    const asset = process.platform === 'darwin'
+      ? `cua-driver-rs-${version}-darwin-universal.tar.gz`
+      : process.platform === 'win32' && (process.arch === 'arm64' || process.arch === 'x64')
+        ? `cua-driver-rs-${version}-windows-${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-binary.zip`
+        : process.platform === 'linux' && (process.arch === 'arm64' || process.arch === 'x64')
+          ? `cua-driver-rs-${version}-linux-${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-binary.tar.gz`
+          : undefined
+    if (!asset) throw new Error(`Unsupported platform for cua-driver (${process.platform}/${process.arch})`)
+    const base = `https://github.com/trycua/cua/releases/download/cua-driver-rs-v${version}`
+    const sumsResponse = await fetch(`${base}/SHA256SUMS`, { signal: AbortSignal.timeout(30_000) })
+    if (!sumsResponse.ok) throw new Error(`Checksum fetch failed (${sumsResponse.status})`)
+    const expected = (await sumsResponse.text()).split(/\r?\n/).map(line => /^([0-9a-f]{64})\s+\*?(.+)$/i.exec(line.trim())).find(m => m?.[2] === asset)?.[1]?.toLowerCase()
+    if (!expected) throw new Error(`Checksum missing for ${asset}`)
+    const stage = path.join(this.root, 'downloads', randomUUID()), archive = path.join(stage, asset), payload = path.join(stage, 'payload')
+    await fs.mkdir(stage, { recursive: true })
+    try {
+      await this.download(`${base}/${asset}`, archive)
+      const actual = createHash('sha256').update(await fs.readFile(archive)).digest('hex').toLowerCase()
+      if (actual !== expected) throw new Error('Cua Driver archive checksum mismatch')
+      await this.extract(archive, payload, asset.endsWith('.zip') ? 'zip' : 'tar.gz')
+      if (process.platform === 'darwin') {
+        const srcApp = path.join(payload, `cua-driver-rs-${version}-darwin-universal`, 'CuaDriver.app')
+        if (!await exists(srcApp)) throw new Error('CuaDriver.app missing from release archive')
+        await this.run('/usr/bin/codesign', ['--verify', '--deep', '--strict', srcApp])
+        const bundleId = (await this.run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', path.join(srcApp, 'Contents/Info.plist')])).trim()
+        if (bundleId !== 'com.trycua.driver') throw new Error(`Unexpected CuaDriver bundle id (${bundleId})`)
+        const appParent = await fs.access('/Applications', fsConstants.W_OK).then(() => '/Applications', () => path.join(this.home, 'Applications'))
+        await fs.mkdir(appParent, { recursive: true })
+        const destApp = path.join(appParent, 'CuaDriver.app'), backup = path.join(stage, 'CuaDriver.app.bak')
+        if (await exists(destApp)) await fs.rename(destApp, backup)
+        try {
+          await this.run('/usr/bin/ditto', [srcApp, destApp])
+          await fs.rm(backup, { recursive: true, force: true })
+        } catch (err) {
+          if (await exists(backup) && !await exists(destApp)) await fs.rename(backup, destApp).catch(() => undefined)
+          throw err
+        }
+        const lsr = '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister'
+        if (await exists(lsr)) await this.run(lsr, ['-f', destApp]).catch(() => undefined)
+        const binary = path.join(destApp, 'Contents/MacOS/cua-driver')
+        const binLink = path.join(this.home, '.local/bin/cua-driver')
+        await fs.mkdir(path.dirname(binLink), { recursive: true }).catch(() => undefined)
+        const existingTarget = await fs.readlink(binLink).catch(() => null)
+        if (!existingTarget || existingTarget.includes('CuaDriver.app')) { await fs.rm(binLink, { force: true }).catch(() => undefined); await fs.symlink(binary, binLink).catch(() => undefined) }
+        return binary
+      }
+      const sourceDir = process.platform === 'win32' ? payload : path.join(payload, `cua-driver-rs-${version}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}-unknown-linux-gnu`)
+      await fs.cp(await exists(sourceDir) ? sourceDir : payload, root, { recursive: true })
+      const exe = path.join(root, process.platform === 'win32' ? 'cua-driver.exe' : 'cua-driver')
+      if (process.platform !== 'win32') await fs.chmod(exe, 0o755)
+      return exe
+    } finally {
+      await fs.rm(stage, { recursive: true, force: true })
+    }
   }
   private async node(): Promise<{ node: string; npm: string; env: NodeJS.ProcessEnv }> {
     const bin = path.join(this.root, 'runtime'), node = path.join(bin, process.platform === 'win32' ? 'node.exe' : 'node')
@@ -251,7 +346,7 @@ export class McpPreparation {
     const stage = path.join(this.root, 'downloads', randomUUID()); await fs.mkdir(stage, { recursive: true })
     const triple = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'
     const archive = path.join(stage, 'uv.tgz'); await this.download(`https://github.com/astral-sh/uv/releases/download/0.12.7/uv-${triple}.tar.gz`, archive)
-    await this.untar(archive, path.join(stage, 'payload')); await fs.mkdir(path.dirname(target), { recursive: true })
+    await this.extract(archive, path.join(stage, 'payload')); await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.copyFile(path.join(stage, 'payload', `uv-${triple}`, 'uv'), target); await fs.chmod(target, 0o755)
     await fs.rm(stage, { recursive: true, force: true }); return target
   }
@@ -262,7 +357,14 @@ export class McpPreparation {
       const reuse = await this.blender()
       if (reuse) return { fingerprint: this.fingerprint(source), command: reuse.command, args: reuse.args ?? [], env: reuse.env, preparedAt: Date.now(), note: 'Reuses existing Blender Lab installation' }
     }
-    if (source.kind === 'npm') {
+    if (source.kind === 'cua-driver') {
+      const reuse = await this.cuaDriver(source.version)
+      command = reuse ?? await this.installCuaDriver(source.version, root)
+      args = source.args?.length ? source.args : ['mcp']
+      note = process.platform === 'darwin'
+        ? `${reuse ? 'Reuses' : 'Installed'} CuaDriver.app; run "cua-driver permissions grant" if macOS Accessibility or Screen Recording is off.`
+        : reuse ? 'Reuses existing Cua Driver installation.' : undefined
+    } else if (source.kind === 'npm') {
       const runtime = await this.node()
       await this.run(runtime.node, [runtime.npm, 'install', '--prefix', root, '--no-audit', '--no-fund', `${source.package}@${source.version}`], runtime.env)
       const packageRoot = path.join(root, 'node_modules', source.package!), manifest = JSON.parse((await readText(path.join(packageRoot, 'package.json')))!)
@@ -348,7 +450,7 @@ export class McpPreparation {
     try {
       const operation = (async () => { const connection = client.connect(transport); await connection; const list = await client.listTools(); this.onTools?.(name, list.tools); return list.tools.length })()
       const count = await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Connection timed out')), 60_000) })])
-      const requirement = name === 'google-workspace' ? 'Google consent was not checked.' : name === 'computer-use' ? 'Desktop permissions were not checked.' : name === 'playwright-cdp' ? 'The browser debugging connection was not checked.' : name === 'blender' ? 'Blender scene operations were not checked.' : ''
+      const requirement = name === 'google-workspace' ? 'Google consent was not checked.' : name === 'computer-use' || name === 'cua-driver' ? 'Desktop permissions were not checked.' : name === 'playwright-cdp' ? 'The browser debugging connection was not checked.' : name === 'blender' ? 'Blender scene operations were not checked.' : ''
       return this.probes[name] = { state: 'Connection verified', detail: `${count} tools listed. The temporary check has finished. ${requirement}`, tools: count, checkedAt: Date.now(), canPrepare: !!mcpSource(name, spec) }
     } catch (error) {
       let detail = `${(error as Error).message} ${errorText}`

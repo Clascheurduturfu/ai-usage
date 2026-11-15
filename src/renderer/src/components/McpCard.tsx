@@ -77,7 +77,7 @@ export function McpCard({ server: s, data, act, busy, edit, prepare, localLaunch
     <div className="mcp-meta">
       <div className="mcp-chips">
         <span className="chip" title="Tools listed by this server"><Wrench size={11} />{metrics?.tools !== undefined ? `${metrics.tools} tools` : 'Tools not measured'}</span>
-        {eager !== undefined && <span className={`chip ${eager > 20_000 ? 'chip-warn' : ''}`} title="Estimated tokens of tool schemas an eager client loads every turn"><Coins size={11} />~{fmtTokens(eager)} tokens{compact && canCompact ? ` → ~${fmtTokens(compactTokens(s.name, data))} compact` : ''}</span>}
+        {eager !== undefined && <span className={`chip ${(compact && canCompact) || eager > 20_000 ? 'chip-warn' : ''}`} title="Estimated tokens of tool schemas an eager client loads every turn"><Coins size={11} />~{fmtTokens(eager)} tokens{compact && canCompact ? ` → ~${fmtTokens(compactTokens(s.name, data))} compact` : ''}</span>}
         <span className="chip" title={metrics?.lastCall ? `Last call ${new Date(metrics.lastCall).toLocaleString()}` : 'Calls relayed through AI Usage'}><Activity size={11} />{metrics?.calls ?? 0} call{metrics?.calls === 1 ? '' : 's'}{metrics?.errors ? ` · ${metrics.errors} failed` : ''}</span>
       </div>
       <div className="mcp-switches">

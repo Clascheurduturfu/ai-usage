@@ -216,7 +216,7 @@ export class ManagerService {
       case 'mcp:localLaunch': await this.preparation.setOverride(p.name, p.launch); await this.recordSync(await this.sync.sync()); this.notify(); return
       case 'mcp:localLaunchGet': return this.preparation.localLaunch(p)
       case 'mcp:help': {
-        const urls: Record<string, string> = { 'aws-mcp': 'https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html', 'google-workspace': 'https://github.com/googleworkspace/cli', 'computer-use': 'https://github.com/domdomegg/computer-use-mcp', blender: 'https://projects.blender.org/lab/blender_mcp', 'playwright-cdp': 'https://github.com/microsoft/playwright-mcp#connect-to-existing-browser' }
+        const urls: Record<string, string> = { 'aws-mcp': 'https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html', 'google-workspace': 'https://github.com/googleworkspace/cli', 'computer-use': 'https://github.com/domdomegg/computer-use-mcp', 'cua-driver': 'https://github.com/trycua/cua/tree/main/libs/cua-driver/rust', blender: 'https://projects.blender.org/lab/blender_mcp', 'playwright-cdp': 'https://github.com/microsoft/playwright-mcp#connect-to-existing-browser' }
         if (!urls[p]) throw new Error('No setup guide for this server'); await this.native('open-url', urls[p]); return
       }
       case 'mcp:auth': { const master = await this.store.mcpRaw(); if (!master[p.name]?.url || master[p.name].command) throw new Error('Only remote HTTP MCP servers use app OAuth'); this.store.config.mcpAuth ??= {}; this.store.config.mcpAuth[p.name] = { enabled: !!p.enabled, secretRef: this.store.config.mcpAuth[p.name]?.secretRef ?? `mcp-${p.name}-auth` }; await this.changed(); return this.recordSync(await this.sync.sync()) }

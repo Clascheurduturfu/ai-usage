@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { AntigravityQuotaDTO, ChatGptQuotaDTO, ChatGptWindowDTO, MistralPlanDTO, OpenRouterQuotaDTO, QuotaSnapshotDTO } from '../shared/types'
 import type { DB } from './db'
 import { kvGet, kvSet } from './db'
-import { fetchAntigravityQuota, findAntigravityClientSecret } from './antigravity-quota'
+import { fetchAntigravityQuota, verifiedAntigravityClientSecret } from './antigravity-quota'
 import { fetchOpenRouterQuota } from './openrouter-quota'
 import { mistralRoot, readMistralWhoamiCache } from './providers/mistral'
 import { getSettings } from './settings'
@@ -377,7 +377,7 @@ export function buildSyncSnapshot(
                 (acc, b) => {
                   ;(acc[b.group] ??= []).push({
                     id: b.id,
-                    label: b.window === 'weekly' ? 'Weekly' : '5-hour',
+                    label: b.window === 'weekly' ? 'Weekly' : b.window === '5h' ? '5-hour' : b.label || 'Quota',
                     leftPct: Math.round(b.remainingFraction * 100),
                     resetAtMs: b.resetTime ?? 0
                   })
@@ -440,9 +440,10 @@ export function startQuotaService(
         update(() => fetchChatGptQuota(db)),
         ...(process.platform === 'darwin' ? [] : [update(() => fetchMistralPlan(mistralRoot(getSettings(db)), db))]),
         update(async () => {
-          let secret = kvGet<string>(db, 'antigravity:clientSecret')
-          if (!secret && process.platform !== 'darwin') { secret = findAntigravityClientSecret() ?? undefined; if (secret) kvSet(db, 'antigravity:clientSecret', secret) }
-          const agy = await fetchAntigravityQuota(secret)
+          const storedSecret = kvGet<string>(db, 'antigravity:clientSecret')
+          const agy = await fetchAntigravityQuota(storedSecret)
+          const verified = verifiedAntigravityClientSecret()
+          if (verified && verified !== storedSecret) kvSet(db, 'antigravity:clientSecret', verified)
           if (agy) kvSet(db, 'quota:antigravity', agy)
         }),
         update(async () => { const or = await fetchOpenRouterQuota(); if (or) kvSet(db, 'quota:openrouter', or) })

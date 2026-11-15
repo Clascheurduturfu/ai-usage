@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 description = "AI Usage and agent endpoint manager"
 edition = "2021"
 default-run = "ai-usage"
