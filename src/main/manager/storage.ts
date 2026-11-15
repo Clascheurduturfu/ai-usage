@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import type { ManagerConfig, McpRecord, SkillInfo } from '../../shared/manager'
+import type { ManagerConfig, McpRecord, SkillFolder, SkillInfo } from '../../shared/manager'
 import { parse as parseYaml } from 'yaml'
 import { composeEndpoints, legacyLibrary, partitionEndpoints, type EndpointLibrary } from './endpoint-library'
 
@@ -18,6 +18,34 @@ export async function atomicWrite(file: string, text: string | Buffer): Promise<
 export function validateName(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) throw new Error('Use a simple name with letters, numbers, dots, underscores or hyphens')
 }
+export function normalizeSkillFolders(raw: unknown): SkillFolder[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new Error('Skill folders must be a list')
+  const result: SkillFolder[] = [], seenIds = new Set<string>(), seenNames = new Set<string>(), claimed = new Set<string>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') throw new Error('Invalid skill folder')
+    const id = String((item as SkillFolder).id ?? '').trim()
+    validateName(id)
+    const name = String((item as SkillFolder).name ?? '').trim()
+    if (!name || name.length > 80) throw new Error('Folder name must be 1 to 80 characters')
+    const lower = name.toLowerCase()
+    if (seenIds.has(id)) throw new Error('Duplicate skill folder id')
+    if (seenNames.has(lower)) throw new Error(`A folder named "${name}" already exists`)
+    if (!Array.isArray((item as SkillFolder).skills)) throw new Error('Invalid folder skill list')
+    const skills: string[] = []
+    for (const skill of (item as SkillFolder).skills) {
+      if (typeof skill !== 'string') throw new Error('Invalid skill name in folder')
+      validatePathComponent(skill)
+      if (claimed.has(skill)) continue
+      claimed.add(skill)
+      skills.push(skill)
+    }
+    seenIds.add(id); seenNames.add(lower)
+    result.push({ id, name, skills: skills.sort((a, b) => a.localeCompare(b)) })
+  }
+  return result
+}
+
 /** A portable filename is different from an MCP/credential identifier. */
 export function validatePathComponent(name: string): void {
   if (!name || name === '.' || name === '..' || Buffer.byteLength(name, 'utf8') > 255 || /[\x00-\x1f\x7f<>:"/\\|?*]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) throw new Error(`Unsafe or non-portable skill path component: ${JSON.stringify(name)}`)
@@ -162,6 +190,27 @@ export class ManagerStore {
     for (const name of await names(this.skillRoot)) if (off.has(name)) await move(name, this.skillRoot, this.parkedSkillRoot)
     for (const name of await names(this.parkedSkillRoot)) if (!off.has(name)) await move(name, this.parkedSkillRoot, this.skillRoot)
     return warnings
+  }
+  async deleteSkill(name: string): Promise<void> {
+    validatePathComponent(name)
+    let removed = false
+    for (const root of [this.skillRoot, this.parkedSkillRoot]) {
+      const target = path.join(root, name)
+      const stat = await fs.lstat(target).catch(() => null)
+      if (!stat) continue
+      if (stat.isSymbolicLink()) {
+        await fs.unlink(target)
+        removed = true
+        continue
+      }
+      if (!stat.isDirectory()) throw new Error('Skill entry is not a directory')
+      const realRoot = await fs.realpath(root)
+      const realTarget = await fs.realpath(target)
+      if (!realTarget.startsWith(realRoot + path.sep)) throw new Error('Skill is outside the managed library')
+      await fs.rm(target, { recursive: true, force: true })
+      removed = true
+    }
+    if (!removed) throw new Error(`Unknown skill: ${name}`)
   }
 }
 

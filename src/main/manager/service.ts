@@ -1,7 +1,7 @@
 import { APP_VERSION } from '../../shared/version'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ManagerStore, Vault, atomicWrite, readText, validateName, validateUrl, type NativeCall } from './storage'
+import { ManagerStore, Vault, atomicWrite, normalizeSkillFolders, readText, validateName, validateUrl, type NativeCall } from './storage'
 import { SyncEngine } from './sync'
 import { Sharing } from './sharing'
 import { AgentLauncher } from './launch'
@@ -179,14 +179,23 @@ export class ManagerService {
         await this.changed(true); return
       }
       case 'manager:autoSync': this.store.config.autoSync = !!p; await this.changed(); return
-      case 'mcp:setEnabled': case 'mcp:setCompact': case 'skill:setEnabled': {
-        const known = method === 'skill:setEnabled' ? (await this.store.skills()).map(s => s.name) : Object.keys(await this.store.mcpRaw())
+      case 'mcp:setEnabled': case 'mcp:setCompact': {
+        const known = Object.keys(await this.store.mcpRaw())
         if (typeof p?.name !== 'string' || !known.includes(p.name)) throw new Error('Unknown library entry')
-        const key = method === 'mcp:setEnabled' ? 'disabledMcp' : method === 'mcp:setCompact' ? 'compactMcp' : 'disabledSkills'
+        const key = method === 'mcp:setEnabled' ? 'disabledMcp' : 'compactMcp'
         // Enabled toggles store the exception (disabled); compact stores the opt-in.
         const listed = method === 'mcp:setCompact' ? !!p.enabled : !p.enabled
         const values = new Set(this.store.config[key] ?? []); if (listed) values.add(p.name); else values.delete(p.name)
         this.store.config[key] = [...values].sort()
+        await this.changed(); return this.recordSync(await this.sync.sync())
+      }
+      case 'skill:setEnabled': case 'skill:setManyEnabled': {
+        const names = method === 'skill:setEnabled' ? (typeof p?.name === 'string' ? [p.name] : []) : (Array.isArray(p?.names) ? p.names.filter((n: unknown): n is string => typeof n === 'string') : [])
+        const known = new Set((await this.store.skills()).map(s => s.name))
+        if (!names.length || names.some((n: string) => !known.has(n))) throw new Error('Unknown library entry')
+        const values = new Set(this.store.config.disabledSkills ?? [])
+        for (const name of names) if (p.enabled) values.delete(name); else values.add(name)
+        this.store.config.disabledSkills = [...values].sort()
         await this.changed(); return this.recordSync(await this.sync.sync())
       }
       case 'manager:contextBudget': { const value = Number(p); if (!Number.isFinite(value) || value < 1000 || value > 2_000_000) throw new Error('Choose a budget between 1,000 and 2,000,000 tokens'); this.store.config.contextBudget = Math.round(value); await this.changed(); return }
@@ -279,6 +288,17 @@ export class ManagerService {
       case 'instructions:save': if (typeof p !== 'string' || p.length > 2_000_000) throw new Error('Instructions are too large'); await atomicWrite(path.join(this.store.pool, 'AGENTS.md'), p); this.notify(); return
       case 'skill:read': return readText(await this.store.skillPath(p))
       case 'skill:save': if (typeof p.text !== 'string' || p.text.length > 2_000_000) throw new Error('Skill text is too large'); await atomicWrite(await this.store.skillPath(p.name), p.text); this.notify(); return
+      case 'skill:delete': {
+        if (typeof p !== 'string') throw new Error('Invalid skill name')
+        this.suppressWatchUntil = Date.now() + 2500
+        await this.store.deleteSkill(p)
+        if (this.store.config.disabledSkills) this.store.config.disabledSkills = this.store.config.disabledSkills.filter(name => name !== p)
+        for (const profile of this.store.config.profiles) profile.disabledSkills = profile.disabledSkills.filter(name => name !== p)
+        if (this.store.config.skillFolders) this.store.config.skillFolders = this.store.config.skillFolders.map(folder => ({ ...folder, skills: folder.skills.filter(name => name !== p) }))
+        await this.changed(true)
+        return
+      }
+      case 'skillFolders:save': this.store.config.skillFolders = normalizeSkillFolders(p); await this.changed(); return
       case 'migration:preview': return { providers: 0, protectedKeys: 0, gateways: 0, routes: 0, profiles: 0, sources: [], alreadyImported: false }
       case 'migration:import': throw new Error('Add endpoints directly or import an encrypted shared library.')
       case 'sharing:configure': { const result = await this.sharing.configure(p.folder, p.passphrase); this.notify(); return result }

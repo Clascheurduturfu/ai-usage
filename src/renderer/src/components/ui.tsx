@@ -1,4 +1,5 @@
-import type { ReactNode, ButtonHTMLAttributes } from 'react'
+import { useEffect, useId, useRef, type ReactNode, type ButtonHTMLAttributes } from 'react'
+import { X } from 'lucide-react'
 
 export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <div className={`panel ${className}`}>{children}</div>
@@ -154,7 +155,8 @@ export function Btn({
   )
 }
 
-export function Toggle({ checked, onChange, label, disabled, title }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean; title?: string }) {
+export function Toggle({ checked, partial, onChange, label, disabled, title }: { checked: boolean; partial?: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean; title?: string }) {
+  const mixed = !checked && !!partial
   return (
     <button
       type="button"
@@ -163,15 +165,85 @@ export function Toggle({ checked, onChange, label, disabled, title }: { checked:
       aria-label={label}
       title={title ?? label}
       disabled={disabled}
-      className="w-[36px] h-[20px] rounded-full relative shrink-0 clickable"
-      style={{ background: checked ? 'var(--accent)' : 'var(--border)', border: 'none' }}
+      className={`w-[36px] h-[20px] rounded-full relative shrink-0 clickable${mixed ? ' toggle-partial' : ''}`}
+      style={{ background: checked ? 'var(--accent)' : mixed ? 'color-mix(in srgb, var(--accent) 42%, var(--border))' : 'var(--border)', border: 'none' }}
       onClick={() => onChange(!checked)}
     >
       <span
         className="absolute top-[2px] w-[16px] h-[16px] rounded-full bg-white transition-all"
-        style={{ left: checked ? 18 : 2 }}
+        style={{ left: checked ? 18 : mixed ? 10 : 2 }}
       />
     </button>
+  )
+}
+
+export function Drawer({ title, close, children }: { title: string; close(): void; children: ReactNode }) {
+  const panel = useRef<HTMLElement>(null), closeRef = useRef(close); closeRef.current = close
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    const controls = (): HTMLElement[] => [...(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]') ?? [])]
+    controls()[0]?.focus()
+    const handler = (e: KeyboardEvent): void => { if (e.key === 'Escape') closeRef.current(); if (e.key === 'Tab') { const list = controls(), first = list[0], last = list.at(-1); if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus() } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus() } } }
+    window.addEventListener('keydown', handler); return () => { window.removeEventListener('keydown', handler); if (previous?.isConnected) previous.focus() }
+  }, [])
+  return <div className="manager-overlay"><section ref={panel} className="manager-drawer" role="dialog" aria-modal="true" aria-label={title}><div className="manager-drawer-head"><h2>{title}</h2><button type="button" className="icon-btn" onClick={close} aria-label="Close"><X size={18} /></button></div>{children}</section></div>
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+  danger,
+  busy,
+  onConfirm,
+  onCancel,
+  children
+}: {
+  open: boolean
+  title: string
+  confirmLabel?: string
+  cancelLabel?: string
+  danger?: boolean
+  busy?: boolean
+  onConfirm(): void
+  onCancel(): void
+  children: ReactNode
+}) {
+  const ref = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  useEffect(() => {
+    const dialog = ref.current
+    if (!dialog) return
+    if (open && !dialog.open) dialog.showModal()
+    else if (!open && dialog.open) dialog.close('cancel')
+  }, [open])
+
+  return (
+    <dialog
+      ref={ref}
+      className="confirm-dialog"
+      aria-labelledby={titleId}
+      onClick={e => { if (e.target === ref.current && !busy) ref.current?.close('cancel') }}
+      onCancel={e => { if (busy) { e.preventDefault(); return } }}
+      onClose={() => {
+        const dialog = ref.current
+        if (!dialog) return
+        const outcome = dialog.returnValue
+        dialog.returnValue = ''
+        if (outcome === 'confirm') onConfirm()
+        else if (open) onCancel()
+      }}
+    >
+      <div className="confirm-dialog-body">
+        <h3 id={titleId}>{title}</h3>
+        <div className="confirm-dialog-copy">{children}</div>
+        <div className="confirm-dialog-actions">
+          <Btn autoFocus disabled={busy} onClick={() => ref.current?.close('cancel')}>{cancelLabel}</Btn>
+          <Btn className={danger ? 'btn-danger' : ''} variant={danger ? 'default' : 'primary'} disabled={busy} onClick={() => ref.current?.close('confirm')}>{confirmLabel}</Btn>
+        </div>
+      </div>
+    </dialog>
   )
 }
 

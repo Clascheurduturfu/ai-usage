@@ -17,7 +17,10 @@ const definitions: Array<[AgentId, string, string, AgentInfo['skillControl']]> =
   ['cline', 'Cline', '.cline/data/settings/cline_mcp_settings.json', 'shared'], ['opencode', 'OpenCode', '.config/opencode/opencode.json', 'native'],
   ['zcode', 'ZCode', '.zcode/cli/config.json', 'shared'], ['copilot', 'Copilot CLI', '.copilot/mcp-config.json', 'shared']
 ]
-const instructions: Partial<Record<AgentId, string>> = { claude: '.claude/CLAUDE.md', codex: '.codex/AGENTS.md', gemini: '.gemini/GEMINI.md', antigravity: '.gemini/GEMINI.md', opencode: '.config/opencode/AGENTS.md', zcode: '.zcode/AGENTS.md' }
+const instructions: Partial<Record<AgentId, string>> = { claude: '.claude/CLAUDE.md', codex: '.codex/AGENTS.md', gemini: '.gemini/GEMINI.md', opencode: '.config/opencode/AGENTS.md', zcode: '.zcode/AGENTS.md' }
+const INSTRUCTIONS_START = '<!-- AI Usage shared instructions -->'
+const INSTRUCTIONS_END = '<!-- /AI Usage shared instructions -->'
+const SKILL_TARGET_ROOTS = ['.claude/skills', '.gemini/config/skills', '.gemini/antigravity-cli/skills'] as const
 type FileChange = { file: string; before: string | null; after: string | null; target: string; encoding?: 'base64'; unmanagedConflict?: boolean; beforeMode?: number; afterMode?: number }
 type Ledger = { hashes: Record<string, string>; names: string[]; baselines?: Record<string, string> }
 const stable = (v: any): string => JSON.stringify(v, (_key, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.keys(value).sort().map(k => [k, value[k]])) : value)
@@ -60,6 +63,25 @@ export class SyncEngine {
       return { id, name, configPath, installed, skillControl, restartRequired: true, endpointSupport: ['claude', 'codex', 'opencode', 'claude-desktop'].includes(id),
         note: id === 'antigravity' ? 'Shared skills are copied to the native global skills folder. Restart after sync.' : skillControl === 'shared' ? 'Reads the shared skill library. Individual exclusions are not guaranteed by this client.' : skillControl === 'none' ? 'Skills are managed by the client separately.' : undefined }
     }))
+  }
+  private async pruneEmptySkillDirs(removedFiles: readonly string[]): Promise<void> {
+    if (!removedFiles.length) return
+    const roots = SKILL_TARGET_ROOTS.map(rel => path.join(this.home, rel))
+    // Sort deepest first so nested subdirectories (e.g. scripts/) disappear before the parent skill folder.
+    const sorted = [...new Set(removedFiles)].sort((a, b) => b.length - a.length)
+    for (const file of sorted) {
+      const root = roots.find(r => file.startsWith(r + path.sep))
+      if (!root) continue
+      let dir = path.dirname(file)
+      while (dir !== root && dir.startsWith(root + path.sep)) {
+        const stat = await fs.lstat(dir).catch(() => null)
+        if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) break
+        const entries = await fs.readdir(dir).catch(() => null)
+        if (!entries || entries.length > 0) break
+        await fs.rmdir(dir).catch(() => undefined)
+        dir = path.dirname(dir)
+      }
+    }
   }
   private ledgerPath(): string { return path.join(this.store.data, 'sync-ledger.json') }
   private async baseline(file: string, ledger: Ledger): Promise<string | undefined> {
@@ -133,25 +155,42 @@ export class SyncEngine {
       if (change.before !== null) files.push(change)
     }
   }
-  private async antigravityInstructions(profile: AgentProfile | undefined, files: FileChange[], warnings: string[]): Promise<void> {
+  private async syncMarkedInstructions(file: string, include: boolean, targetLabel: string, files: FileChange[], warnings: string[]): Promise<void> {
+    if (files.some(change => change.file === file)) return
+    const existing = await readText(file), current = existing ?? ''
+    let after: string
+    if (!include) {
+      if (!current.includes(INSTRUCTIONS_START)) return
+      after = current
+        .replace(/\n{0,2}<!-- AI Usage shared instructions -->[\s\S]*?<!-- \/AI Usage shared instructions -->\n?/g, (_match, offset: number) => offset === 0 ? '' : '\n')
+        .replace(/^\n+/, '')
+    } else {
+      const source = path.join(this.store.pool, 'AGENTS.md'), text = await readText(source)
+      if (text === null) {
+        if (!warnings.some(w => w.includes('no shared AGENTS.md exists yet'))) warnings.push(`${targetLabel}: no shared AGENTS.md exists yet; existing instructions were kept`)
+        return
+      }
+      if (await fs.realpath(file).catch(() => file) === await fs.realpath(source).catch(() => source)) return
+      const block = `${INSTRUCTIONS_START}\n${text.trimEnd()}\n${INSTRUCTIONS_END}`
+      if (current.includes(INSTRUCTIONS_START)) {
+        after = current.replace(/<!-- AI Usage shared instructions -->[\s\S]*?<!-- \/AI Usage shared instructions -->/g, block)
+      } else if (current.trim() === text.trim()) {
+        // Upgrade an earlier unmarked full-file write instead of appending a second copy.
+        after = block + '\n'
+      } else {
+        after = current.trimEnd() + (current.trim() ? '\n\n' : '') + block + '\n'
+      }
+    }
+    if (after !== current) files.push({ file, before: existing, after, target: targetLabel })
+  }
+  private async antigravityInstructions(profile: AgentProfile | undefined, wantFor: (id: AgentId) => boolean, geminiInstalled: boolean, files: FileChange[], warnings: string[]): Promise<void> {
     const primary = path.join(this.home, '.gemini/config/GEMINI.md'), legacy = path.join(this.home, '.gemini/GEMINI.md')
     const target = await readText(primary) !== null ? primary : legacy
-    const marker = /\n?<!-- AI Usage shared instructions -->[\s\S]*?<!-- \/AI Usage shared instructions -->\n?/g
     const other = target === primary ? legacy : primary
-    const targets = profile && !profile.instructions ? [primary, legacy] : [target, ...((await readText(other))?.includes('<!-- AI Usage shared instructions -->') ? [other] : [])]
+    const targets = profile && !profile.instructions ? [primary, legacy] : [target, ...((await readText(other))?.includes(INSTRUCTIONS_START) ? [other] : [])]
     for (const file of targets) {
-      if (files.some(change => change.file === file)) continue;
-      const current = await readText(file) ?? ''
-      let after: string
-      if (profile && !profile.instructions) after = current.replace(marker, '')
-      else {
-        const source = path.join(this.store.pool, 'AGENTS.md'), text = await readText(source)
-        if (text === null) { warnings.push('Antigravity: no shared AGENTS.md exists yet; existing instructions were kept'); return }
-        if (await fs.realpath(file).catch(() => file) === await fs.realpath(source).catch(() => source)) return
-        const block = `<!-- AI Usage shared instructions -->\n${text.trimEnd()}\n<!-- /AI Usage shared instructions -->`
-        after = current.includes('<!-- AI Usage shared instructions -->') ? current.replace(marker, '\n' + block + '\n') : current.trimEnd() + (current.trim() ? '\n\n' : '') + block + '\n'
-      }
-      if (after !== current) files.push({ file, before: await readText(file), after, target: 'Antigravity instructions' })
+      const include = wantFor('antigravity') || (file === legacy && geminiInstalled && wantFor('gemini'))
+      await this.syncMarkedInstructions(file, include, 'Antigravity instructions', files, warnings)
     }
   }
   async preview(): Promise<SyncPreview> {
@@ -173,6 +212,16 @@ export class SyncEngine {
     const managed = new Set([...ledger.names, ...names])
     const files: FileChange[] = [], warnings: string[] = [...setupWarnings]
     const agents = await this.agents()
+    const installedIds = new Set(agents.filter(a => a.installed).map(a => a.id))
+    const wantFor = (id: AgentId): boolean => {
+      if (!installedIds.has(id)) return false
+      const p = this.store.config.profiles.find(pr => pr.id === this.store.config.activeProfiles[id])
+      return !p || p.instructions
+    }
+    const geminiInstructionTarget = path.join(this.home, '.gemini/GEMINI.md')
+    const agyInstructionPrimary = path.join(this.home, '.gemini/config/GEMINI.md')
+    const agyInstructionTarget = await readText(agyInstructionPrimary) !== null ? agyInstructionPrimary : geminiInstructionTarget
+    const geminiUsesMarked = installedIds.has('antigravity') || (await readText(geminiInstructionTarget) ?? '').includes(INSTRUCTIONS_START)
     const add = async (file: string, after: string, target: string): Promise<void> => {
       if (files.some(f => f.file === file)) return
       const before = await readText(file)
@@ -190,7 +239,7 @@ export class SyncEngine {
       if (agent.id === 'antigravity') {
         await this.materializeSkills(skillsOff, ledger, files, warnings)
         if (process.platform === 'darwin' && await fs.access(path.join(this.home, '.gemini/antigravity-cli')).then(() => true, () => false)) await this.materializeSkills(skillsOff, ledger, files, warnings, '.gemini/antigravity-cli/skills')
-        await this.antigravityInstructions(profile, files, warnings)
+        await this.antigravityInstructions(profile, wantFor, installedIds.has('gemini'), files, warnings)
       }
       const selected = profile ? new Set(profile.mcpNames) : new Set(names)
       // Compact relays replace a large tool list with search + call for clients that load every schema eagerly.
@@ -257,7 +306,10 @@ export class SyncEngine {
       if (profileOff.length && agent.skillControl !== 'native') warnings.push(`${agent.name}: this profile's skill exclusions are not enforced; this client reads the whole shared skill folder`)
       if (agent.id === 'claude-desktop' && entries.length < selected.size) warnings.push('Claude Desktop: its settings file only accepts local servers, so remote servers that are not routed through AI Usage were left out. Add those in Claude Desktop under Settings → Connectors, or turn on Connect via AI Usage for them.')
       const relative = agent.id === 'antigravity' ? undefined : instructions[agent.id]
-      if (relative && (!profile || profile.instructions)) {
+      if (relative && agent.id === 'gemini' && geminiUsesMarked) {
+        const include = wantFor('gemini') || (agyInstructionTarget === geminiInstructionTarget && wantFor('antigravity'))
+        await this.syncMarkedInstructions(geminiInstructionTarget, include, `${agent.name} instructions`, files, warnings)
+      } else if (relative && (!profile || profile.instructions)) {
         const source = path.join(this.store.pool, 'AGENTS.md'), target = path.join(this.home, relative)
         const realTarget = await fs.realpath(target).catch(() => target), realSource = await fs.realpath(source).catch(() => source)
         const sourceText = await readText(source)
@@ -300,6 +352,7 @@ export class SyncEngine {
     const applied: FileChange[] = []
     try { for (const file of preview.files) { applied.push(file); await writeChange(file, file.after, file.afterMode) } }
     catch (error) { for (const file of applied.reverse()) await writeChange(file, file.before, file.beforeMode); throw error }
+    await this.pruneEmptySkillDirs(preview.files.filter(f => f.after === null).map(f => f.file))
     const ledger: Ledger = JSON.parse(await readText(this.ledgerPath()) ?? '{"hashes":{},"names":[]}')
     ledger.baselines ??= {}
     for (const file of preview.files) { if (file.after === null) { delete ledger.hashes[file.file]; delete ledger.baselines[file.file] } else { ledger.hashes[file.file] = hash(file.after); ledger.baselines[file.file] = file.after } }
@@ -344,6 +397,7 @@ export class SyncEngine {
     const restored: FileChange[] = []
     try { for (const file of files) { restored.push(file); await writeChange(file, file.before, file.beforeMode) } }
     catch (error) { for (const file of restored.reverse()) await writeChange(file, file.after, file.afterMode); throw error }
+    await this.pruneEmptySkillDirs(files.filter(f => f.before === null).map(f => f.file))
     const ledger: Ledger = JSON.parse(await readText(this.ledgerPath()) ?? '{"hashes":{},"names":[]}')
     for (const file of files) { delete ledger.hashes[file.file]; if (ledger.baselines) delete ledger.baselines[file.file] }
     await atomicWrite(this.ledgerPath(), JSON.stringify(ledger))

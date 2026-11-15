@@ -24,10 +24,18 @@ export interface ManagerConfig {
   workspaceOAuth?: { secretRef: string; projectId: string }
   /** Library entries kept but synced to no agent. */
   disabledMcp?: string[]; disabledSkills?: string[]
+  /** UI-only folder groupings for skills (disk layout remains flat in ~/.agents/skills). */
+  skillFolders?: SkillFolder[]
   /** MCPs whose relayed tool list is replaced by a search + call pair for eager clients. */
   compactMcp?: string[]
   /** Warn when an agent's estimated customization context exceeds this many tokens. */
   contextBudget?: number
+}
+
+export interface SkillFolder {
+  id: string
+  name: string
+  skills: string[]
 }
 /** Agents that load MCP tool schemas on demand themselves; compact mode and eager cost do not apply. */
 export const LAZY_TOOL_AGENTS: readonly AgentId[] = ['claude', 'antigravity']

@@ -1,6 +1,6 @@
 import type { AnalyticsDTO, AppMeta, HistoryDTO, HistoryFilter, OverviewDTO, PriceCatalogEntry, ProviderDetailDTO, ProviderId, QuotaSnapshotDTO, ScanStatus, Settings, UsageFilter } from './types'
 import type { UpdateChannel, UpdateStatus } from './update'
-import type { AgentProfile, EndpointRecord, EndpointTest, LaunchSelection, ManagerSnapshot, McpRecord, MigrationPreview, ProxyRecord, SharingStatus, SyncPreview, SyncResult, InstallPreview, McpSetupPreview, McpDeviceStatus } from './manager'
+import type { AgentProfile, EndpointRecord, EndpointTest, LaunchSelection, ManagerSnapshot, McpRecord, MigrationPreview, ProxyRecord, SharingStatus, SkillFolder, SyncPreview, SyncResult, InstallPreview, McpSetupPreview, McpDeviceStatus } from './manager'
 
 export function createApi(
   invoke: <T>(method: string, params?: unknown) => Promise<T>,
@@ -79,11 +79,14 @@ export function createApi(
     setMcpEnabled: (name: string, enabled: boolean) => invoke<SyncResult>('mcp:setEnabled', { name, enabled }),
     setMcpCompact: (name: string, enabled: boolean) => invoke<SyncResult>('mcp:setCompact', { name, enabled }),
     setSkillEnabled: (name: string, enabled: boolean) => invoke<SyncResult>('skill:setEnabled', { name, enabled }),
+    setSkillsEnabled: (names: string[], enabled: boolean) => invoke<SyncResult>('skill:setManyEnabled', { names, enabled }),
+    saveSkillFolders: (folders: SkillFolder[]) => invoke<void>('skillFolders:save', folders),
     setContextBudget: (tokens: number) => invoke<void>('manager:contextBudget', tokens),
     resetMcpCalls: (name?: string) => invoke<void>('mcp:resetCalls', name),
     saveInstructions: (text: string) => invoke<void>('instructions:save', text),
     readSkill: (name: string) => invoke<string>('skill:read', name),
     saveSkill: (name: string, text: string) => invoke<void>('skill:save', { name, text }),
+    deleteSkill: (name: string) => invoke<void>('skill:delete', name),
     migrationPreview: () => invoke<MigrationPreview>('migration:preview'),
     importLegacy: () => invoke<MigrationPreview>('migration:import'),
     configureSharing: (folder: string, passphrase: string) => invoke<SharingStatus>('sharing:configure', { folder, passphrase }),

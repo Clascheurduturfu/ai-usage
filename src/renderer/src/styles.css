@@ -492,3 +492,99 @@ html[data-theme='light'] { --seg-mcp: #3f8f5c; --seg-skills: #3f6fc4; --seg-rule
 .sync-details span { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); }
 .sync-details ul { list-style: disc; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
 .sync-row-attention { align-items: flex-start; }
+
+/* 1.0.0-rc.7: skill folders, delete prompt, move popover */
+.skill-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.skill-section-head .btn { text-transform: none; letter-spacing: normal; padding: 4px 8px; font-size: 11px; }
+.skill-folders { display: flex; flex-direction: column; gap: 10px; }
+.skill-folder { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; transition: border-color 140ms, background 140ms; }
+.skill-folder-drop { border-color: var(--accent) !important; background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+.skill-folder-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; min-width: 0; }
+.skill-folder-trigger { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; text-align: left; padding: 4px 2px; border-radius: 8px; }
+.skill-folder-trigger:hover .skill-folder-name { color: var(--accent); }
+.skill-folder-chevron { color: var(--faint); flex-shrink: 0; transform: rotate(-90deg); transition: transform 150ms ease, color 150ms; }
+.skill-folder-trigger[aria-expanded='true'] .skill-folder-chevron { transform: rotate(0deg); color: var(--muted); }
+.skill-folder-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.skill-folder-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 140ms; }
+.skill-folder-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.skill-folder-actions .btn { padding: 6px 10px; }
+.skill-folder-body { padding: 12px 14px 14px; border-top: 1px solid var(--border-soft); }
+.skill-folder-body .skill-row { background: var(--bg-soft); }
+.skill-folder-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 4px; font-size: 11px; }
+.skill-ungrouped-zone { border: 1px solid transparent; border-radius: 12px; padding: 2px; transition: border-color 140ms, background 140ms; }
+.skill-dragging { opacity: .52; border-style: dashed; }
+.skill-row { gap: 8px; }
+.skill-action-btn, .skill-delete-btn { flex-shrink: 0; }
+.skill-delete-btn:hover:not(:disabled) { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.chip-muted { color: var(--muted); }
+
+.folder-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 500; }
+.folder-picker-bulk { display: flex; gap: 4px; }
+.folder-picker-bulk .btn { padding: 4px 8px; font-size: 11px; }
+.folder-choice-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.folder-choice-copy strong { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; }
+
+.skill-folder-popover {
+  padding: 6px;
+  min-width: 210px;
+  max-width: 280px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 44px rgb(0 0 0 / 0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.skill-folder-popover[popover]:not(:popover-open) { display: none; }
+@supports (position-area: block-end) {
+  .skill-folder-popover[popover] {
+    inset: auto;
+    margin: 0;
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+@supports not (position-area: block-end) {
+  .skill-folder-popover {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    top: var(--popover-top, 120px);
+    right: var(--popover-right, 24px);
+    z-index: 70;
+  }
+}
+.skill-popover-label { padding: 6px 8px; font-size: 10px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skill-popover-label strong { color: var(--muted); }
+.skill-popover-sep { height: 1px; margin: 4px 2px; background: var(--border-soft); }
+.skill-folder-popover button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: 7px; font-size: 12px; text-align: left; color: var(--muted); }
+.skill-folder-popover button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-folder-popover button:hover { background: var(--panel-2); color: var(--text); }
+.skill-folder-popover button.active { color: var(--accent); background: var(--accent-soft); }
+
+dialog.confirm-dialog { padding: 0; border: none; background: transparent; color: var(--text); }
+dialog.confirm-dialog[open] {
+  margin: auto;
+  width: min(440px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.48);
+}
+dialog.confirm-dialog:modal { overscroll-behavior: contain; }
+dialog.confirm-dialog::backdrop {
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  backdrop-filter: blur(3px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+.confirm-dialog-body { padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
+.confirm-dialog-body h3 { font-size: 15px; font-weight: 600; color: var(--text); }
+.confirm-dialog-copy { display: flex; flex-direction: column; gap: 10px; font-size: 12px; line-height: 1.65; color: var(--muted); }
+.confirm-dialog-copy code { font-size: 10px; padding: 6px 9px; border-radius: 7px; background: var(--bg-soft); border: 1px solid var(--border-soft); color: var(--text); overflow-wrap: anywhere; }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.btn-danger { background: color-mix(in srgb, var(--bad) 16%, var(--panel-2)); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 26%, var(--panel-2)); filter: none; }
+@media (max-width: 720px) { .skill-folder-head { flex-wrap: wrap; } .skill-folder-actions { margin-left: auto; } }

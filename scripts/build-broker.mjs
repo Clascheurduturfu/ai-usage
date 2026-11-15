@@ -30,7 +30,25 @@ if (process.platform === 'darwin') {
   await fs.chmod(`src-tauri/binaries/aiu-node-${target}`, 0o755)
 }
 // Device preparation works even when Node and npm are absent from the user's PATH.
-const npmRoot = process.platform === 'darwin' ? path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm') : path.resolve(path.dirname(process.execPath), 'node_modules/npm')
+const npmCandidates = process.platform === 'darwin'
+  ? [
+      path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm'),
+      '/opt/homebrew/lib/node_modules/npm',
+      '/usr/local/lib/node_modules/npm'
+    ]
+  : [path.resolve(path.dirname(process.execPath), 'node_modules/npm')]
+let npmRoot = ''
+for (const candidate of npmCandidates) {
+  try { if ((await fs.stat(path.join(candidate, 'package.json'))).isFile()) { npmRoot = candidate; break } } catch { /* try next */ }
+}
+if (!npmRoot && process.platform === 'darwin') {
+  try {
+    const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim()
+    const viaNpm = path.join(globalRoot, 'npm')
+    if ((await fs.stat(path.join(viaNpm, 'package.json'))).isFile()) npmRoot = viaNpm
+  } catch { /* ignore */ }
+}
+if (!npmRoot) throw new Error(`Could not locate bundled npm directory (checked: ${npmCandidates.join(', ')})`)
 await fs.cp(npmRoot, path.join(output, 'npm'), { recursive: true })
 
 // Compile the lightweight relay/supervisor before Tauri resolves sidecar resources.

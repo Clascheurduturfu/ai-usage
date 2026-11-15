@@ -12,7 +12,11 @@ export function demoManager(): ManagerSnapshot {
     },
     config: {
       schema: 2, revision: 'demo', autoSync: true, endpoints: [], proxies: [], profiles: [], activeProfiles: {},
-      disabledMcp: ['cloud-cli'], compactMcp: ['sample-files'], disabledSkills: ['legacy-notes'], contextBudget: 30_000,
+      disabledMcp: ['cloud-cli'], compactMcp: ['sample-files'], disabledSkills: ['legacy-notes'],
+      skillFolders: [
+        { id: 'folder-workflow', name: 'Engineering', skills: ['code-review', 'release-notes'] }
+      ],
+      contextBudget: 30_000,
       mcpAuth: { 'cloud-tools': { enabled: true, secretRef: 'mcp-cloud-tools-auth' }, 'cloud-logs': { enabled: true, secretRef: 'mcp-cloud-logs-auth' }, 'cloud-docs': { enabled: true, secretRef: 'mcp-cloud-docs-auth' }, 'cloud-builds': { enabled: true, secretRef: 'mcp-cloud-builds-auth' } }
     },
     agents: [
@@ -79,6 +83,13 @@ export function demoManagerApi(): Partial<AiuApi> {
     setMcpEnabled: async (name: string, enabled: boolean) => toggle('disabledMcp', name, !enabled),
     setMcpCompact: async (name: string, enabled: boolean) => toggle('compactMcp', name, enabled),
     setSkillEnabled: async (name: string, enabled: boolean) => toggle('disabledSkills', name, !enabled),
+    setSkillsEnabled: async (names: string[], enabled: boolean) => { const values = new Set(state.config.disabledSkills ?? []); for (const n of names) if (enabled) values.delete(n); else values.add(n); state.config.disabledSkills = [...values]; return synced },
+    saveSkillFolders: async folders => { state.config.skillFolders = structuredClone(folders) },
+    deleteSkill: async name => {
+      state.skills = state.skills.filter(s => s.name !== name)
+      state.config.disabledSkills = state.config.disabledSkills?.filter(n => n !== name)
+      state.config.skillFolders = state.config.skillFolders?.map(f => ({ ...f, skills: f.skills.filter(n => n !== name) }))
+    },
     setContextBudget: async (tokens: number) => { state.config.contextBudget = tokens },
     sharingSettings: async () => ({ folder: 'C:/Sample/Shared', passphrase: '' }), sharingFileExists: async () => true,
     checkMcp: async name => ({ state: 'Connection verified', detail: `${name}: 4 tools listed.`, tools: 4, checkedAt: Date.now(), canPrepare: false }),

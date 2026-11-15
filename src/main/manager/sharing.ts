@@ -3,7 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, randomUUID } from 'node:crypto'
 import type { ManagerConfig, SharingStatus } from '../../shared/manager'
-import { atomicWrite, ManagerStore, readText, validateName, validatePathComponent, validateUrl, Vault } from './storage'
+import { atomicWrite, ManagerStore, normalizeSkillFolders, readText, validateName, validatePathComponent, validateUrl, Vault } from './storage'
 import { portableMcp, mcpSource } from './mcp-preparation'
 import { validateWorkspaceAccount } from '../../shared/workspace-account'
 import { composeEndpoints, legacyLibrary, partitionEndpoints, type EndpointLibrary } from './endpoint-library'
@@ -182,6 +182,7 @@ export class Sharing {
     for (const [name, value] of Object.entries(bundle.config.workspaceAccounts ?? {})) { validateWorkspaceAccount(name); validateName(value.secretRef); if (typeof bundle.credentials[value.secretRef] !== 'string') throw new Error('Missing shared Workspace credential') }
     if (bundle.config.workspaceOAuth) { validateName(bundle.config.workspaceOAuth.secretRef); if (!/^[a-z][a-z0-9-]{4,62}[a-z0-9]$/.test(bundle.config.workspaceOAuth.projectId) || typeof bundle.credentials[bundle.config.workspaceOAuth.secretRef] !== 'string') throw new Error('Invalid shared Google OAuth project') }
     for (const profile of bundle.config.profiles) { validateName(profile.id); if (!Array.isArray(profile.mcpNames) || !Array.isArray(profile.disabledSkills)) throw new Error('Invalid shared profile') }
+    if (bundle.config.skillFolders !== undefined) bundle.config.skillFolders = normalizeSkillFolders(bundle.config.skillFolders)
     const skillRoot = path.join(this.store.pool, 'skills')
     await fs.mkdir(skillRoot, { recursive: true })
     if ((await fs.lstat(skillRoot)).isSymbolicLink()) throw new Error('A linked master skill directory prevents safe import')
