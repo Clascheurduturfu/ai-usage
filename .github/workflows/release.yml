@@ -1,0 +1,156 @@
+name: Publish release
+
+# On demand only. Stable publishes a final version from main; Preview publishes the
+# rolling prerelease from the preview branch. The in-app updater (src/main/updater.ts)
+# relies on this contract: tag v<version>, prerelease flag matching the version, one
+# `AI Usage_<version>_x64-setup.exe` and one `AI Usage_<version>_aarch64.dmg`, each with
+# GitHub's SHA-256 asset digest.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        options: [preview, stable]
+        default: preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - id: version
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REF: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tauri=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)
+          [ "$version" = "$tauri" ] && [ "$version" = "$cargo" ] || { echo "::error::Versions differ: package.json $version, tauri.conf.json $tauri, Cargo.toml $cargo"; exit 1; }
+          if [ "$CHANNEL" = stable ]; then
+            [ "$REF" = main ] || { echo "::error::Stable publishes from main, not $REF"; exit 1; }
+            echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::Stable needs a final version, got $version"; exit 1; }
+          else
+            [ "$REF" = preview ] || { echo "::error::Preview publishes from the preview branch, not $REF"; exit 1; }
+            echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$' || { echo "::error::Preview needs a prerelease version such as 1.1.0-beta.3, got $version"; exit 1; }
+          fi
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release v$version already exists. Advance the version (Preview: next beta number) before publishing."; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows-x64
+          - os: macos-15
+            artifact: macos-apple-silicon
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24.14.0'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: npm run dist
+      - name: Build macOS app and disk image
+        if: runner.os == 'macOS'
+        run: sh scripts/build-mac.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-${{ matrix.artifact }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: packages
+          pattern: package-*
+          merge-multiple: true
+      - name: Check packages
+        run: |
+          set -euo pipefail
+          # Names come from the built artifacts and must carry the validated version.
+          ls -l packages
+          [ -f "packages/AI Usage_${VERSION}_x64-setup.exe" ] && [ -f "packages/AI Usage_${VERSION}_aarch64.dmg" ] || { echo "::error::Built packages do not match version $VERSION"; exit 1; }
+          [ "$(ls packages | wc -l)" -eq 2 ] || { echo "::error::Expected exactly two packages"; exit 1; }
+          (cd packages && sha256sum * > ../SHA256SUMS && cat ../SHA256SUMS)
+      - name: Create draft and upload
+        run: |
+          set -euo pipefail
+          notes="docs/releases/${VERSION}.md"; [ -f "$notes" ] || { printf 'AI Usage %s (%s)\n' "$VERSION" "$CHANNEL" > /tmp/notes.md; notes=/tmp/notes.md; }
+          flags=(); [ "$CHANNEL" = preview ] && flags+=(--prerelease --latest=false)
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "AI Usage $VERSION" --notes-file "$notes" "${flags[@]}"
+          gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" packages/* SHA256SUMS
+      - name: Verify uploaded bytes
+        run: |
+          set -euo pipefail
+          mkdir check && gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir check --pattern 'AI Usage_*'
+          (cd check && sha256sum -c ../SHA256SUMS)
+      - name: Publish
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" = stable ]; then gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          else gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false; fi
+      - name: Verify as the app sees it
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > releases.json
+          node -e '
+            const releases = require("./releases.json"), v = process.env.VERSION, stable = process.env.CHANNEL === "stable"
+            const r = releases.find(x => x.tag_name === "v" + v)
+            if (!r || r.draft || r.prerelease === stable) throw new Error("published release not visible with the right channel flag")
+            for (const name of [`AI Usage_${v}_x64-setup.exe`, `AI Usage_${v}_aarch64.dmg`]) {
+              const a = r.assets.find(x => x.name === name)
+              if (!a || !/^sha256:[0-9a-f]{64}$/.test(a.digest ?? "")) throw new Error(`${name} missing or without a digest`)
+            }
+            console.log("ok", r.tag_name, r.assets.map(a => a.name + " " + a.digest).join(", "))'
+      - name: Retire older Preview releases
+        if: inputs.channel == 'preview'
+        run: |
+          set -euo pipefail
+          # Only after the new Preview is verified. Release records go; their tags stay. Stable is untouched.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.prerelease and (.draft | not) and .tag_name != "v" + env.VERSION and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-"))) | .tag_name' |
+          while read -r tag; do echo "Removing release record $tag (tag kept)"; gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || echo "::warning::Could not remove $tag; check it manually"; done
