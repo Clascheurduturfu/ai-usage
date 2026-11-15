@@ -17,6 +17,9 @@ describe('conflict explanations', () => {
   it('reports skills switched in the client', () => {
     expect(describeOwnedEdits(owned({}, { disabled: ['pdf'] }), owned({}, { disabled: ['docx'] }))).toEqual(['Skill “docx” was disabled in the client', 'Skill “pdf” was enabled again in the client'])
   })
+  it('says which argument changed when the count is the same', () => {
+    expect(describeOwnedEdits(owned({ a: { args: ['x', 'y'] } }), owned({ a: { args: ['x', 'z'] } }))).toEqual(['MCP server “a”: args changed (item 2 of 2)'])
+  })
   it('summarizes instruction edits by line and caps long lists', () => {
     expect(describeTextEdits('one\ntwo\n', 'one\nthree\n')).toEqual(['1 line added, 1 removed since the last sync', 'Added: three', 'Removed: two'])
     expect(describeTextEdits('a\n\nb', 'b\na')).toEqual(['Only spacing or line order changed'])

@@ -84,6 +84,13 @@ export class SyncEngine {
       if (launch.command) launch.args ??= []
       return [name, launch]
     }))
+    // An entry that still points at AI Usage's own relay is ours whatever variant it is (for
+    // example the compact flag). A client that saves an older copy of its settings brings an
+    // older variant back; that is not an outside edit and must not pause sync.
+    mcp = Object.fromEntries(Object.entries(mcp).map(([name, value]) => {
+      const args = (value as Record<string, any>)?.args
+      return [name, Array.isArray(args) && (args.includes('--relay') || args.includes('--workspace')) ? { aiUsageRelay: true } : value]
+    }))
     const root = path.join(this.store.pool, 'skills') + path.sep
     return stable({ mcp,
       skillOverrides: select(doc.skillOverrides, skills), disabled: (doc.skills?.disabled ?? []).filter((n: string) => skills.has(n)).sort(),
@@ -248,7 +255,7 @@ export class SyncEngine {
       await add(agent.configPath, after, agent.name)
       if (agent.id === 'zcode' && profile && !Object.keys(servers).length && names.length) throw new Error('ZCode falls back to the master when its MCP list is empty; an empty MCP profile cannot be enforced')
       if (profileOff.length && agent.skillControl !== 'native') warnings.push(`${agent.name}: this profile's skill exclusions are not enforced; this client reads the whole shared skill folder`)
-      if (agent.id === 'claude-desktop' && entries.length < selected.size) warnings.push('Claude Desktop: remote MCP servers require client-managed connectors; only stdio entries are generated')
+      if (agent.id === 'claude-desktop' && entries.length < selected.size) warnings.push('Claude Desktop: its settings file only accepts local servers, so remote servers that are not routed through AI Usage were left out. Add those in Claude Desktop under Settings → Connectors, or turn on Connect via AI Usage for them.')
       const relative = agent.id === 'antigravity' ? undefined : instructions[agent.id]
       if (relative && (!profile || profile.instructions)) {
         const source = path.join(this.store.pool, 'AGENTS.md'), target = path.join(this.home, relative)
@@ -274,7 +281,7 @@ export class SyncEngine {
         } catch { details = ['The file cannot be read as valid settings right now, for example a missing comma or bracket. Open it to check.'] }
       } else if (conflict && f.unmanagedConflict) details = ['This file already existed before AI Usage ever synced it. Syncing replaces its content.']
       else if (conflict && f.encoding) details = ['A file inside a synced skill folder was changed.']
-      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, details: conflict ? details : undefined, summary: f.encoding ? 'Copy or remove managed skill assets; preserve native skills' : 'Update managed entries; preserve unrelated settings' }
+      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, details: conflict ? details : undefined, summary: f.encoding ? 'Copy or remove managed skill assets; preserve native skills' : f.target.endsWith(' instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' }
     }))
     const dto: SyncPreview = { id: randomUUID(), createdAt: Date.now(), warnings, changes }
     this.previews.clear(); this.previews.set(dto.id, { dto, files }); return dto

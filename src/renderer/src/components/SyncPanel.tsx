@@ -54,7 +54,8 @@ export function SyncPanel({ data, act, busy }: { data: ManagerSnapshot; act: Act
           </div>
         </Panel>}
 
-    {!!last?.warnings.length && <Panel className="sync-notes"><Info size={15} aria-hidden /><ul>{last.warnings.map(w => <li key={w}>{w}</li>)}</ul></Panel>}
+    {/* While paused, the banner already says why; the last result's own message would repeat it. */}
+    {!!last?.warnings.length && !paused.length && <Panel className="sync-notes"><Info size={15} aria-hidden /><ul>{last.warnings.map(w => <li key={w}>{w}</li>)}</ul></Panel>}
 
     {preview && <Panel className="manager-block sync-review">
       <div className="sync-review-head">

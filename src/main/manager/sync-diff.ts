@@ -15,7 +15,11 @@ function fieldChange(key: string, before: unknown, after: unknown): string {
   if (before === undefined) return `${key} was added`
   if (after === undefined) return `${key} was removed`
   if (SHOWN.has(key)) return `${key} changed from ${quote(before)} to ${quote(after)}`
-  if (Array.isArray(before) && Array.isArray(after) && before.length !== after.length) return `${key} changed (${before.length} → ${after.length} items)`
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (before.length !== after.length) return `${key} changed (${before.length} → ${after.length} items)`
+    const at = before.map((v, i) => same(v, after[i]) ? 0 : i + 1).filter(Boolean)
+    return `${key} changed (item ${at.join(', ')} of ${before.length})`
+  }
   const a = record(before), b = record(after), keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => !same(a[k], b[k]))
   if (keys.length && !Array.isArray(before) && !Array.isArray(after)) return `${key} changed (${keys.slice(0, 4).join(', ')}${keys.length > 4 ? `, +${keys.length - 4} more` : ''})`
   return `${key} changed`

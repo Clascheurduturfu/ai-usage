@@ -38,6 +38,22 @@ describe('shared manager writes', () => {
     const result = await engine.apply(preview.id); expect(result.changed).toBe(0); expect(result.conflicts.length).toBeGreaterThan(0)
     expect(await fs.readFile(path.join(home, '.claude.json'), 'utf8')).toBe(original)
   })
+  it('does not pause when a client brings back an older variant of an AI Usage relay entry', async () => {
+    const { home, engine } = await fixture(); expect((await engine.sync()).conflicts).toEqual([])
+    const file = path.join(home, '.claude.json'), doc = JSON.parse(await fs.readFile(file, 'utf8'))
+    expect(doc.mcpServers.shared.args).toContain('--relay')
+    doc.mcpServers.shared.args = [...doc.mcpServers.shared.args.slice(0, -1), 'shared@older-variant']
+    await atomicWrite(file, JSON.stringify(doc))
+    const preview = await engine.preview(), change = preview.changes.find(c => c.path === file)!
+    expect(change.conflict).toBe(false)
+    expect((await engine.apply(preview.id)).conflicts).toEqual([])
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).mcpServers.shared.args.at(-1)).toBe('shared')
+    // A real outside edit of a managed entry still pauses and is explained.
+    doc.mcpServers.shared = { command: 'something-else', args: [] }
+    await atomicWrite(file, JSON.stringify(doc))
+    const edited = (await engine.preview()).changes.find(c => c.path === file)!
+    expect(edited.conflict).toBe(true); expect(edited.details?.[0]).toMatch(/MCP server “shared”/)
+  })
   it('restores original bytes and refuses to overwrite edits after a sync', async () => {
     const { home, engine } = await fixture(), original = await fs.readFile(path.join(home, '.codex/config.toml'), 'utf8')
     const result = await engine.sync(); expect((await engine.restore(result.backupId!)).conflicts).toEqual([])
