@@ -279,4 +279,51 @@ describe('skill folders and deletion', () => {
     expect((await engine.sync()).conflicts).toEqual([])
     expect(await fs.readFile(geminiFile, 'utf8')).toContain('<!-- AI Usage shared instructions -->')
   })
+  it('deletes removed skills on Sharing import and propagates deletions cleanly via SyncEngine', async () => {
+    const source = await fixture(), target = await fixture(), folder = path.join(source.home, 'shared')
+    await atomicWrite(path.join(source.store.pool, 'skills/aws-extra/SKILL.md'), '---\nname: aws-extra\ndescription: Extra\n---\n')
+    await atomicWrite(path.join(source.store.pool, 'skills/aws-keep/SKILL.md'), '---\nname: aws-keep\ndescription: Keep\n---\n')
+    source.store.config.skillFolders = [{ id: 'folder-aws', name: 'AWS', skills: ['aws-extra', 'aws-keep'] }]
+    await source.store.save()
+    const sourceVault = new Vault(path.join(source.store.data, 'vault.json'), async (_m, v) => v); await sourceVault.load()
+    const sourceSharing = new Sharing(source.store, sourceVault, source.home); await sourceSharing.load(); await sourceSharing.configure(folder, 'sufficiently long password')
+    await sourceSharing.publish()
+
+    const targetVault = new Vault(path.join(target.store.data, 'vault.json'), async (_m, v) => v); await targetVault.load()
+    const targetSharing = new Sharing(target.store, targetVault, target.home); await targetSharing.load(); await targetSharing.configure(folder, 'sufficiently long password')
+    await targetSharing.import(true)
+    expect((await target.engine.sync()).conflicts).toEqual([])
+    expect(await fs.stat(path.join(target.home, '.claude/skills/aws-extra/SKILL.md')).then(() => true, () => false)).toBe(true)
+
+    // Delete aws-extra on source, update folder, re-publish, then import on target.
+    await source.store.deleteSkill('aws-extra')
+    source.store.config.skillFolders = [{ id: 'folder-aws', name: 'AWS', skills: ['aws-keep'] }]
+    await source.store.save()
+    await sourceSharing.publish()
+
+    // Also ensure a linked local skill on target survives import pruning untouched.
+    const linked = path.join(target.home, 'linked-skill')
+    await atomicWrite(path.join(linked, 'SKILL.md'), '---\nname: linked\ndescription: Linked\n---\n')
+    await fs.symlink(linked, path.join(target.store.pool, 'skills/linked'), 'junction')
+
+    await targetSharing.import(true)
+    expect(target.store.config.skillFolders).toEqual([{ id: 'folder-aws', name: 'AWS', skills: ['aws-keep'] }])
+    await expect(fs.lstat(path.join(target.store.pool, 'skills/aws-extra'))).rejects.toThrow()
+    expect(await fs.lstat(path.join(target.store.pool, 'skills/linked')).then(s => s.isSymbolicLink(), () => false)).toBe(true)
+    expect((await target.engine.sync()).conflicts).toEqual([])
+    await expect(fs.lstat(path.join(target.home, '.claude/skills/aws-extra'))).rejects.toThrow()
+    expect(await fs.stat(path.join(target.home, '.claude/skills/aws-keep/SKILL.md')).then(() => true, () => false)).toBe(true)
+
+    // Rollback also restores skills that would have been removed by a failing import.
+    const badBundle: any = { config: structuredClone(source.store.config), mcp: await source.store.mcpRaw(), instructions: 'Shared', skills: {}, credentials: { __invalid_ref: 'x' } }
+    // Force write failure via a read-only/invalid mcp.json target or symlink check wouldn't reach writes; trigger a vault write failure instead.
+    let fail = true
+    const rollbackVault = new Vault(path.join(target.store.data, 'vault.json'), async (_m, v) => { if (fail && v === 'boom') throw new Error('Rollback trigger'); return v }); await rollbackVault.load()
+    const rollbackSharing = new Sharing(target.store, rollbackVault, target.home); await rollbackSharing.load(); await rollbackSharing.configure(folder, 'sufficiently long password')
+    badBundle.credentials = { first: 'boom' }
+    await atomicWrite(path.join(folder, 'ai-usage-shared.encrypted.json'), JSON.stringify(encryptBundle(badBundle, 'sufficiently long password', 'fail-rev')))
+    await expect(rollbackSharing.import(true)).rejects.toThrow('Rollback trigger')
+    fail = false
+    expect(await fs.stat(path.join(target.store.pool, 'skills/aws-keep/SKILL.md')).then(() => true, () => false)).toBe(true)
+  })
 })

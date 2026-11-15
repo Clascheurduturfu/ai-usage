@@ -10,6 +10,36 @@ import { composeEndpoints, legacyLibrary, partitionEndpoints, type EndpointLibra
 
 type Envelope = { schema: 1; revision: string; parent?: string; salt: string; iv: string; tag: string; data: string }
 type Bundle = { config: ManagerConfig; endpointLibrary?: EndpointLibrary; mcp: Record<string, any>; instructions: string; skills: Record<string, string>; credentials: Record<string, string> }
+const IGNORED_SKILL_ENTRIES = new Set(['node_modules', '__pycache__'])
+async function listSkillFiles(root: string): Promise<string[]> {
+  const files: string[] = []
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      if (entry.name.startsWith('.') || IGNORED_SKILL_ENTRIES.has(entry.name) || entry.isSymbolicLink()) continue
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) await walk(full)
+      else if (entry.isFile()) files.push(path.relative(root, full).split(path.sep).join('/'))
+    }
+  }
+  if (await fs.stat(root).then(s => s.isDirectory(), () => false)) await walk(root)
+  return files
+}
+async function pruneEmptySkillDirs(root: string): Promise<void> {
+  const walk = async (directory: string, depth: number): Promise<boolean> => {
+    let entries: import('node:fs').Dirent[]
+    try { entries = await fs.readdir(directory, { withFileTypes: true }) } catch { return false }
+    let empty = true
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || IGNORED_SKILL_ENTRIES.has(entry.name) || entry.isSymbolicLink() || !entry.isDirectory()) {
+        empty = false; continue
+      }
+      if (!await walk(path.join(directory, entry.name), depth + 1)) empty = false
+    }
+    if (empty && depth > 0) { await fs.rmdir(directory).catch(() => undefined); return true }
+    return empty
+  }
+  await walk(root, 0)
+}
 export function mapMcpPaths(value: any, home: string, pool: string, portable: boolean): any {
   if (typeof value === 'string') {
     if (portable) return value.split(pool).join('${AIU_POOL}').split(pool.replaceAll('\\', '/')).join('${AIU_POOL}').split(home).join('${AIU_HOME}').split(home.replaceAll('\\', '/')).join('${AIU_HOME}')
@@ -112,20 +142,13 @@ export class Sharing {
     const skills: Record<string, string> = {}
     let size = 0
     // Disabled skills are parked outside the shared folder; they are still part of the library.
-    let root = this.store.skillRoot
-    const walk = async (directory: string): Promise<void> => {
-      for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') || ['node_modules', '__pycache__'].includes(entry.name) || entry.isSymbolicLink()) continue
-        const full = path.join(directory, entry.name)
-        if (entry.isDirectory()) await walk(full)
-        else if (entry.isFile()) {
-          const bytes = await fs.readFile(full); size += bytes.length
-          if (size > 64 * 1024 * 1024 || bytes.length > 8 * 1024 * 1024) throw new Error('Shared skills exceed the 64 MiB bundle or 8 MiB file limit')
-          skills[path.relative(root, full).split(path.sep).join('/')] = bytes.toString('base64')
-        }
+    for (const base of [this.store.skillRoot, this.store.parkedSkillRoot]) {
+      for (const relative of await listSkillFiles(base)) {
+        const bytes = await fs.readFile(path.join(base, relative)); size += bytes.length
+        if (size > 64 * 1024 * 1024 || bytes.length > 8 * 1024 * 1024) throw new Error('Shared skills exceed the 64 MiB bundle or 8 MiB file limit')
+        skills[relative] = bytes.toString('base64')
       }
     }
-    for (const base of [this.store.skillRoot, this.store.parkedSkillRoot]) { root = base; if (await fs.stat(base).then(s => s.isDirectory(), () => false)) await walk(base) }
     // MCP OAuth grants rotate on every refresh, so a copied grant breaks whichever
     // device refreshes second. They stay on the device that signed in; only the
     // "connect through AI Usage" setting travels.
@@ -195,7 +218,9 @@ export class Sharing {
     const backup = path.join(this.store.data, 'shared-imports', randomUUID())
     await fs.mkdir(backup, { recursive: true })
     for (const name of ['manager.json', 'endpoints.custom.json', 'mcp.json', 'AGENTS.md']) { const value = await readText(path.join(this.store.pool, name)); if (value !== null) await atomicWrite(path.join(backup, name), value) }
-    await fs.cp(path.join(this.store.pool, 'skills'), path.join(backup, 'skills'), { recursive: true, dereference: false })
+    const existingSkills = await listSkillFiles(skillRoot)
+    await fs.cp(path.join(this.store.pool, 'skills'), path.join(backup, 'skills'), { recursive: true, filter: () => false }).catch(() => undefined)
+    for (const relative of existingSkills) await atomicWrite(path.join(backup, 'skills', relative), await fs.readFile(path.join(skillRoot, relative)))
     const oldConfig = structuredClone(this.store.config), oldVault = this.vault.protectedSnapshot(), oldLibrary = this.store.endpointSnapshot()
     const localMaster = await this.store.mcpRaw(), importedMaster = mapMcpPaths(bundle.mcp, this.home, this.store.pool, false)
     // MCP sign-ins are per device (see publish). Older bundles may still carry
@@ -238,13 +263,21 @@ export class Sharing {
       const before = await fs.readFile(file).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return null; throw e })
       writes.push({ file, before }); await atomicWrite(file, value)
     }
+    const incomingSkills = new Set(Object.keys(bundle.skills))
     try {
       for (const [id, value] of Object.entries(bundle.credentials)) if (!preserved.has(id)) await this.vault.set(id, value)
+      for (const relative of existingSkills) {
+        if (incomingSkills.has(relative)) continue
+        const file = path.join(skillRoot, relative)
+        const before = await fs.readFile(file).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return null; throw e })
+        if (before !== null) { writes.push({ file, before }); await fs.rm(file, { force: true }) }
+      }
       for (const [relative, encoded] of Object.entries(bundle.skills)) await replace(path.join(skillRoot, relative), Buffer.from(encoded, 'base64'))
       await replace(path.join(this.store.pool, 'mcp.json'), JSON.stringify({ mcpServers: importedMaster }, null, 2))
       await replace(path.join(this.store.pool, 'AGENTS.md'), bundle.instructions)
       await replace(path.join(this.store.pool, 'manager.json'), JSON.stringify(bundle.config, null, 2))
       this.store.config = bundle.config; this.store.adoptEndpoints(incomingLibrary); await this.store.save()
+      await pruneEmptySkillDirs(skillRoot)
     } catch (error) {
       for (const change of writes.reverse()) { if (change.before === null) await fs.rm(change.file, { force: true }); else await atomicWrite(change.file, change.before) }
       this.store.config = oldConfig; this.store.adoptEndpoints(oldLibrary); await atomicWrite(path.join(this.store.pool, 'endpoints.custom.json'), JSON.stringify(oldLibrary, null, 2)); await this.vault.restoreProtected(oldVault)
