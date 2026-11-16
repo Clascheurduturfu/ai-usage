@@ -340,8 +340,9 @@ async function cloudcodePost<T>(endpoint: string, accessToken: string, payload: 
 export async function fetchAntigravityQuota(clientSecret?: string): Promise<AntigravityQuotaDTO | null> {
   const base = { fetchedAt: Date.now(), availablePromptCredits: null, monthlyPromptCredits: null, buckets: [] }
   try {
-    if (process.platform === 'darwin') {
-      // The running client refreshes its own OAuth session. Reading its model
+    {
+      // The running client refreshes its own OAuth session (macOS and Windows; returns nothing when
+      // Antigravity is closed, and the cloud path below takes over). Reading its model
       // quotas avoids pairing a standalone refresh token with an IDE client ID.
       const [response, quota] = await Promise.all([antigravityRpc('GetUserStatus'), antigravityRpc('RetrieveUserQuotaSummary')])
       const user = response?.userStatus

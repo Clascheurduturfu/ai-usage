@@ -229,3 +229,16 @@ describe('Antigravity 2.x conversation databases', () => {
     } finally { db.close() }
   })
 })
+
+describe('Antigravity model names', () => {
+  it('prefers the stored display label and maps routing aliases', async () => {
+    const { antigravityModel } = await import('../src/main/providers/antigravity')
+    expect(antigravityModel('gemini-pro-default', 'Gemini 3.1 Pro (High)')).toBe('gemini-3.1-pro')
+    expect(antigravityModel('gemini-4-hydrogen', 'Gemini 4 Hydrogen (XHigh)')).toBe('gemini-4-hydrogen')
+    expect(antigravityModel('gemini-pro-orchestrator-g1-pro', 'Orchestrator (Argon)')).toBe('gemini-4-argon')
+    expect(antigravityModel('gemini-3-flash-a', undefined)).toBe('gemini-3.5-flash')
+    expect(antigravityModel('gemini-flash-worker-agy', 'Gemini Flash')).toBe('gemini-3.8-flash')
+    expect(antigravityModel('claude-opus-4-6-thinking', 'Claude Opus 4.6 (Thinking)')).toBe('claude-opus-4.6')
+    expect(antigravityModel('some-new-model', undefined)).toBe('some-new-model')
+  })
+})

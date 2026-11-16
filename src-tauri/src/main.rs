@@ -343,6 +343,19 @@ fn runtime_path(value: std::path::PathBuf) -> std::path::PathBuf {
     text.strip_prefix(r"\\?\").unwrap_or(&text).into()
 }
 
+/// macOS: back to a menu-bar-only app once the main window is gone. Deferred to the next turn of the
+/// main run loop: changing the activation policy from inside the window's own teardown does not
+/// always stick, which left a dead Dock icon behind.
+#[cfg(target_os = "macos")]
+fn leave_dock(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if handle.get_webview_window("main").is_some() { return; }
+        let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        let _ = handle.set_dock_visibility(false);
+    });
+}
+
 fn open_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     { let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular); let _ = app.set_dock_visibility(true); }
@@ -630,10 +643,7 @@ fn main() {
                 }
             }
             #[cfg(target_os = "macos")]
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
-                let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
-                let _ = window.app_handle().set_dock_visibility(false);
-            }
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) { leave_dock(window.app_handle()); }
         })
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -683,6 +693,9 @@ fn main() {
         .build(tauri::generate_context!()).expect("Unable to initialize AI Usage")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event { api.prevent_exit(); }
+            // Clicking the Dock icon (while it is shown) opens the window instead of doing nothing.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = &event { open_window(app); }
             if let tauri::RunEvent::Exit = event {
                 let broker = app.state::<Arc<Broker>>();
                 let _ = broker.send(json!({"id": 0, "method": "app:shutdown"}));

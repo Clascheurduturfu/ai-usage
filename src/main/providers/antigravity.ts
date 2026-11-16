@@ -168,6 +168,23 @@ export function createAntigravityUsageParser(
 }
 
 /**
+ * Antigravity's internal model ids include routing aliases. The display label it stores with
+ * each call names the real model ("Gemini 3.1 Pro (High)" for `gemini-pro-default`), so it wins;
+ * aliases seen without a label map to what their labelled calls show.
+ */
+const MODEL_ALIASES: Record<string, string> = {
+  'gemini-pro-default': 'gemini-3.1-pro', 'gemini-pro-orchestrator-g1-pro': 'gemini-4-argon', 'gemini-4-argon-trial': 'gemini-4-argon',
+  'gemini-flash-worker-agy': 'gemini-3.8-flash', 'gemini-default': 'gemini-3.5-flash', 'gemini-3-flash-a': 'gemini-3.5-flash', 'gemini-3.8-flash-n': 'gemini-3.8-flash'
+}
+export function antigravityModel(raw: string | undefined, label: string | undefined): string | null {
+  const name = label?.replace(/\s*\((?:low|medium|high|xhigh|max|thinking)\)\s*$/i, '').trim()
+  if (name && /^orchestrator \(argon\)$/i.test(name)) return 'gemini-4-argon'
+  // "Gemini Flash" alone names no version; fall back to the id.
+  if (name && /^(?:gemini|claude|gpt)[\s-]/i.test(name) && !/^gemini flash$/i.test(name)) return name.toLowerCase().replace(/\s+/g, '-')
+  return raw ? MODEL_ALIASES[raw] ?? raw : name || null
+}
+
+/**
  * Antigravity 2.x keeps each conversation in `~/.gemini/antigravity/conversations/<cascadeId>.db`.
  * Its `gen_metadata` table holds one protobuf row per model call (the same generator metadata the
  * Antigravity Token Monitor extension used to fetch over the local RPC, which no longer returns
@@ -203,11 +220,13 @@ export function readConversationUsage(file: string, afterIdx: number, info: Conv
       for (const entry of chat.filter(f => f.field === 20 && f.value instanceof Uint8Array)) {
         try { const kv = pbFields(entry.value as Uint8Array), key = pbString(kv, 1), value = pbString(kv, 2); if (value === 'true' && key === 'used_non_gemini_model') meta.nonGemini = true; if (value === 'true' && key === 'used_claude') meta.claude = true } catch { /* nested key */ }
       }
-      const label = pbString(chat, 21)
+      const label = pbString(chat, 21), raw = pbString(chat, 19)
       if (label) meta.label = label
+      const model = antigravityModel(raw, label)
+      if (raw && raw !== model) meta.rawModel = raw
       events.push({
         id: `antigravity:${cascadeId}:g${row.idx}`, provider: 'antigravity', ts, session_id: cascadeId, project: info?.project ?? null,
-        model: pbString(chat, 19) ?? label ?? null, kind: 'tokens', input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead,
+        model, kind: 'tokens', input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead,
         cache_write_tokens: 0, reasoning_tokens: reasoning, cost_usd: null, source_file: null, meta: Object.keys(meta).length ? JSON.stringify(meta) : null
       })
     }
@@ -229,7 +248,7 @@ function scanConversation(db: DB, rawFile: string, info: ConversationInfo | unde
   saveFileIndex(db, { path: file, provider: 'antigravity', size, mtime, byte_offset: 0, event_count: (fresh ? 0 : row?.event_count ?? 0) + events.length, parser_state: JSON.stringify({ lastIdx, __parserVersion: CONVERSATION_PARSER }), added: events.length })
   return events.length
 }
-const CONVERSATION_PARSER = 1
+const CONVERSATION_PARSER = 2
 
 export const antigravityAdapter: ProviderAdapter = {
   id: 'antigravity',
