@@ -23,7 +23,9 @@ const event = (name: string): void => send({ event: name })
 let nativeId = 0
 const nativePending = new Map<number, { resolve: (value: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>()
 const native = (method: string, value: string): Promise<string> => new Promise((resolve, reject) => {
-  const id = ++nativeId, timer = setTimeout(() => { nativePending.delete(id); reject(new Error('Native operation timed out')) }, 30_000)
+  // Keychain reads can wait on a macOS approval prompt; give the person time to answer it.
+  const limit = method === 'protect' || method === 'unprotect' ? 10 * 60_000 : 30_000
+  const id = ++nativeId, timer = setTimeout(() => { nativePending.delete(id); reject(new Error(limit > 30_000 ? 'Timed out waiting for Keychain approval. Allow AI Usage in the Keychain prompt, then reopen AI Usage.' : 'Native operation timed out')) }, limit)
   nativePending.set(id, { resolve, reject, timer }); send({ nativeId: id, native: method, value })
 })
 const db = openDb(appDbPath()), offline = process.env.AIU_OFFLINE === '1'

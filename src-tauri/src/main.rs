@@ -144,15 +144,23 @@ fn crypt(value: &str, decrypt: bool) -> Result<String, String> {
     use security_framework::passwords::{get_generic_password, set_generic_password};
     const SERVICE: &str = "io.github.clascheurduturfu.aiusage";
     const ACCOUNT: &str = "vault-aes256-v1";
-    let mut key = match get_generic_password(SERVICE, ACCOUNT) {
-        Ok(key) => key,
-        Err(error) if error.code() == -25300 && !decrypt => {
-            let key = Aes256Gcm::generate_key(OsRng).to_vec();
-            set_generic_password(SERVICE, ACCOUNT, &key).map_err(|error| format!("macOS Keychain could not save AI Usage credentials ({}). Unlock your login keychain in Keychain Access, then retry Import or Sign in.", error.code()))?;
-            key
-        },
-        Err(_) => return Err("Unlock macOS Keychain to access AI Usage credentials".into()),
-    };
+    // One Keychain read per app run: each read is a round-trip to securityd and, after an update,
+    // a prompt. Calls are serialized so concurrent decrypts wait for that one prompt.
+    static VAULT_KEY: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+    let mut slot = VAULT_KEY.lock().map_err(|_| "Keychain vault key unavailable")?;
+    if slot.is_none() {
+        *slot = Some(match get_generic_password(SERVICE, ACCOUNT) {
+            Ok(key) => key,
+            Err(error) if error.code() == -25300 && !decrypt => {
+                let key = Aes256Gcm::generate_key(OsRng).to_vec();
+                set_generic_password(SERVICE, ACCOUNT, &key).map_err(|error| format!("macOS Keychain could not save AI Usage credentials ({}). Unlock your login keychain in Keychain Access, then retry Import or Sign in.", error.code()))?;
+                key
+            },
+            Err(_) => return Err("Unlock macOS Keychain to access AI Usage credentials".into()),
+        });
+    }
+    let mut key = slot.as_ref().unwrap().clone();
+    drop(slot);
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| "Invalid Keychain vault key")?;
     key.fill(0);
     if decrypt {
@@ -527,7 +535,12 @@ fn start_broker(app: &tauri::AppHandle) -> Result<Arc<Broker>, Box<dyn std::erro
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break; };
             let Ok(frame) = serde_json::from_str::<Value>(&line) else { continue; };
-            if let Some(native_id) = frame.get("nativeId") {
+            if let Some(native_id) = frame.get("nativeId").cloned() {
+                // Native work (Keychain, elevation helpers, notifications) runs on its own thread:
+                // a Keychain prompt waiting for the user must not hold up every other backend
+                // reply and event behind it, which froze the window.
+                let (cloned, app, frame) = (cloned.clone(), app.clone(), frame.clone());
+                std::thread::spawn(move || {
                 let value = frame["value"].as_str().unwrap_or("");
                 let result = match frame["native"].as_str().unwrap_or("") {
                     "mcp-supervisor" => serde_json::from_str::<Value>(value).map_err(|_| "Invalid supervisor handshake".to_string()).and_then(|info| { *app.state::<SupervisorControl>().0.lock().map_err(|_| "Supervisor unavailable")?=Some(info); Ok(Value::Null) }),
@@ -550,6 +563,7 @@ fn start_broker(app: &tauri::AppHandle) -> Result<Arc<Broker>, Box<dyn std::erro
                 };
                 let response = match result { Ok(v) => json!({"nativeId": native_id, "result": v}), Err(e) => json!({"nativeId": native_id, "error": e}) };
                 let _ = cloned.send(response);
+                });
             } else if let Some(event) = frame["event"].as_str() {
                 let _ = app.emit(event, frame.get("data").unwrap_or(&Value::Null));
                 if event == "data:updated" { refresh_tray_quotas(app.clone()); }
