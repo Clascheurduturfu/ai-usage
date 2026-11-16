@@ -1,6 +1,6 @@
 import type { AnalyticsDTO, AppMeta, HistoryDTO, HistoryFilter, OverviewDTO, PriceCatalogEntry, ProviderDetailDTO, ProviderId, QuotaSnapshotDTO, ScanStatus, Settings, UsageFilter } from './types'
 import type { UpdateChannel, UpdateStatus } from './update'
-import type { AgentProfile, EndpointRecord, EndpointTest, LaunchSelection, ManagerSnapshot, McpRecord, MigrationPreview, ProxyRecord, SharingStatus, SkillFolder, SyncPreview, SyncResult, InstallPreview, McpSetupPreview, McpDeviceStatus } from './manager'
+import type { AgentProfile, EndpointRecord, EndpointTest, LaunchSelection, ManagerSnapshot, McpRecord, MigrationPreview, ProxyRecord, SharingStatus, SkillFolder, SyncPreview, SyncResult, SyncApplyOptions, InstallPreview, McpSetupPreview, McpDeviceStatus } from './manager'
 
 export function createApi(
   invoke: <T>(method: string, params?: unknown) => Promise<T>,
@@ -69,7 +69,7 @@ export function createApi(
     enableWorkspace: () => invoke<{ enabled: boolean }>('workspace:enable'),
     openMcpHelp: (name: string) => invoke<void>('mcp:help', name),
     previewSync: () => invoke<SyncPreview>('manager:preview'),
-    applySync: (id: string) => invoke<SyncResult>('manager:apply', id),
+    applySync: (id: string, options?: SyncApplyOptions) => invoke<SyncResult>('manager:apply', options ? { id, ...options } : id),
     adoptSyncEdits: (id: string) => invoke<SyncPreview>('manager:adopt', id),
     syncAgents: () => invoke<SyncResult>('manager:sync'),
     refreshAntigravity: () => invoke<void>('agent:refreshAntigravity'),

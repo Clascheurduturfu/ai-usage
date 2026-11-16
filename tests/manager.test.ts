@@ -55,6 +55,25 @@ describe('shared manager writes', () => {
     const edited = (await engine.preview()).changes.find(c => c.path === file)!
     expect(edited.conflict).toBe(true); expect(edited.details?.[0]).toMatch(/MCP server “shared”/)
   })
+  it('describes planned writes and lets each edited file be overwritten or skipped', async () => {
+    const { home, engine } = await fixture()
+    const first = await engine.preview(), claude = path.join(home, '.claude.json')
+    const planned = first.changes.find(c => c.path === claude)!
+    expect(planned.kind).toBe('settings'); expect(planned.action).toBeDefined()
+    expect(planned.planned?.some(line => /MCP server “shared”/.test(line))).toBe(true)
+    expect((await engine.apply(first.id)).conflicts).toEqual([])
+    const doc = JSON.parse(await fs.readFile(claude, 'utf8')); doc.mcpServers.shared = { command: 'something-else', args: [] }
+    await atomicWrite(claude, JSON.stringify(doc))
+    // Skip: nothing written to the edited file, it stays reported as paused.
+    const skipped = await engine.preview(); expect(skipped.changes.find(c => c.path === claude)!.conflict).toBe(true)
+    const kept = await engine.apply(skipped.id, false, { skip: [claude] })
+    expect(kept.conflicts).toEqual([claude]); expect(JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers.shared.command).toBe('something-else')
+    // Overwrite: AI Usage's entry is written back and the pause clears.
+    const again = await engine.preview(), edited = again.changes.find(c => c.path === claude)!
+    expect(edited.planned?.some(line => /now launched through AI Usage/.test(line))).toBe(true)
+    expect((await engine.apply(again.id, false, { overwrite: [claude] })).conflicts).toEqual([])
+    expect(JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers.shared.args).toContain('--relay')
+  })
   it('restores original bytes and refuses to overwrite edits after a sync', async () => {
     const { home, engine } = await fixture(), original = await fs.readFile(path.join(home, '.codex/config.toml'), 'utf8')
     const result = await engine.sync(); expect((await engine.restore(result.backupId!)).conflicts).toEqual([])

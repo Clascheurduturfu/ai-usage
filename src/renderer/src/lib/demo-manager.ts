@@ -1,5 +1,5 @@
 import type { AiuApi } from '../../../shared/api'
-import type { ManagerSnapshot, SyncPreview } from '../../../shared/manager'
+import type { ManagerSnapshot, SyncChange, SyncPreview } from '../../../shared/manager'
 
 // Fictional shared-library state covering each MCP status the card can show.
 const now = Date.now()
@@ -69,10 +69,13 @@ export function demoManager(): ManagerSnapshot {
     }
   }
 }
-const syncPreview = (conflict: boolean): SyncPreview => ({ id: 'sample', createdAt: Date.now(), warnings: [], changes: [
-  ['Claude Code', 'C:/Sample/.claude.json', false], ['Claude Code instructions', 'C:/Sample/.claude/CLAUDE.md', false],
-  ['Claude Desktop', 'C:/Sample/AppData/Roaming/Claude/claude_desktop_config.json', conflict], ['Codex instructions', 'C:/Sample/.codex/AGENTS.md', false]
-].map(([target, path, c]) => ({ target: target as string, path: path as string, beforeHash: 'a', afterHash: 'b', changed: true, conflict: c as boolean, details: c ? ['MCP server “browser”: command changed from "npx" to "node"; args changed (2 → 3 items)', 'MCP server “memory” was removed from the file'] : undefined, summary: String(target).endsWith('instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' })) })
+const syncPreview = (conflict: boolean): SyncPreview => ({ id: 'sample', createdAt: Date.now(), warnings: [], changes: ([
+  { target: 'Claude Code', path: 'C:/Sample/.claude.json', action: 'update', kind: 'settings', planned: ['Adds MCP server “kanzo”', 'Updates MCP server “memory”: now launched through AI Usage'] },
+  { target: 'Claude Code instructions', path: 'C:/Sample/.claude/CLAUDE.md', action: 'update', kind: 'instructions', planned: ['2 lines added, 1 removed', 'Added: Use Kanzo for project memory.', 'Removed: Old rule'] },
+  { target: 'Claude Desktop', path: 'C:/Sample/AppData/Roaming/Claude/claude_desktop_config.json', conflict, action: 'update', kind: 'settings', details: conflict ? ['MCP server “browser”: command changed from "npx" to "node"; args changed (2 → 3 items)', 'MCP server “memory” was removed from the file'] : undefined, planned: ['Updates MCP server “browser”: no longer launched through AI Usage', 'Adds MCP server “memory”'] },
+  ...['Claude Code', 'Antigravity'].flatMap(client => Array.from({ length: 160 }, (_, i) => ({ target: `${client} skills`, path: `C:/Sample/${client === 'Claude Code' ? '.claude' : '.gemini/config'}/skills/cloudflare/references/doc-${i}.md`, action: 'remove' as const, kind: 'skill' as const, skill: 'cloudflare' }))),
+  ...Array.from({ length: 12 }, (_, i) => ({ target: 'Claude Code skills', path: `C:/Sample/.claude/skills/brag/assets/file-${i}.md`, action: (i < 10 ? 'add' : 'update') as 'add' | 'update', kind: 'skill' as const, skill: 'brag' }))
+] as Array<Partial<SyncChange> & { target: string; path: string }>).map(c => ({ conflict: false, ...c, beforeHash: 'a', afterHash: 'b', changed: true, summary: '' })) })
 export function demoManagerApi(): Partial<AiuApi> {
   const done = async (): Promise<void> => undefined
   // Toggles change this in-memory copy so the preview responds like the real app.

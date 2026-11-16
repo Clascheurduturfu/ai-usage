@@ -223,7 +223,7 @@ export class ManagerService {
       case 'mcp:login': await this.auth.signIn(p); return
       case 'mcp:logout': { const ref = this.store.config.mcpAuth?.[p]?.secretRef; if (ref) await this.vault.delete(ref); this.auth.setStatus(p, 'Sign-in required'); await this.changed(); return }
       case 'manager:preview': return this.sync.preview()
-      case 'manager:apply': return this.recordSync(await this.sync.apply(p))
+      case 'manager:apply': return this.recordSync(typeof p === 'string' ? await this.sync.apply(p) : await this.sync.apply(p.id, false, { overwrite: p.overwrite, skip: p.skip }))
       case 'manager:adopt': {
         // Keeping the outside edits resolves the pause for those files; the status must say so.
         const preview = await this.sync.adopt(p), still = new Set(preview.changes.filter(c => c.conflict).map(c => c.path))

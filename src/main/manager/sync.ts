@@ -3,7 +3,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { parse as parseJson, modify, applyEdits } from 'jsonc-parser'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import { COMPACT_SUFFIX, LAZY_TOOL_AGENTS, type AgentId, type AgentInfo, type AgentProfile, type AntigravityStatus, type SyncPreview, type SyncResult } from '../../shared/manager'
+import { COMPACT_SUFFIX, LAZY_TOOL_AGENTS, type AgentId, type AgentInfo, type AgentProfile, type AntigravityStatus, type SyncApplyOptions, type SyncChange, type SyncPreview, type SyncResult } from '../../shared/manager'
 import { ManagerStore, atomicWrite, hash, readText, validatePathComponent } from './storage'
 import { renderCodexToml, renderGeminiServers } from './vendor/renderers'
 import { McpPreparation } from './mcp-preparation'
@@ -319,8 +319,21 @@ export class SyncEngine {
         }
       }
     }
+    const skillRoots = SKILL_TARGET_ROOTS.map(rel => path.join(this.home, rel) + path.sep)
     const changes = await Promise.all(files.map(async f => {
       let conflict = !!f.unmanagedConflict || (!!ledger.hashes[f.file] && ledger.hashes[f.file] !== hash(f.before ?? ''))
+      const action: SyncChange['action'] = f.before === null ? 'add' : f.after === null ? 'remove' : 'update'
+      const root = f.encoding ? skillRoots.find(r => f.file.startsWith(r)) : undefined
+      const skill = root ? f.file.slice(root.length).split(path.sep)[0] : undefined
+      let planned: string[] | undefined
+      if (!f.encoding && f.after !== null) {
+        const toml = f.file.endsWith('.toml')
+        try {
+          planned = !/\.(json|toml)$/.test(f.file) ? describeTextEdits(f.before ?? '', f.after, 'plan')
+            : describeOwnedEdits(await this.owned(f.before ?? (toml ? '' : '{}'), f.file, managed), await this.owned(f.after, f.file, managed), 'plan')
+        } catch { planned = undefined }
+        if (planned && !planned.length) planned = ['Only formatting of AI Usage’s own entries changes; nothing you would notice']
+      }
       let details: string[] | undefined
       if (conflict && !f.encoding && !f.unmanagedConflict) {
         const baseline = await this.baseline(f.file, ledger)
@@ -333,32 +346,42 @@ export class SyncEngine {
         } catch { details = ['The file cannot be read as valid settings right now, for example a missing comma or bracket. Open it to check.'] }
       } else if (conflict && f.unmanagedConflict) details = ['This file already existed before AI Usage ever synced it. Syncing replaces its content.']
       else if (conflict && f.encoding) details = ['A file inside a synced skill folder was changed.']
-      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, details: conflict ? details : undefined, summary: f.encoding ? 'Copy or remove managed skill assets; preserve native skills' : f.target.endsWith(' instructions') ? 'Replace with the shared instructions' : 'Update managed entries; preserve unrelated settings' }
+      const summary = f.encoding ? (action === 'remove' ? 'Removes a file of a skill no longer in the shared library' : action === 'add' ? 'Copies a shared skill file' : 'Updates a shared skill file')
+        : f.target.endsWith(' instructions') ? 'Writes the shared instructions' : 'Updates AI Usage’s entries; your other settings stay as they are'
+      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, action, kind: f.encoding ? 'skill' as const : f.target.endsWith(' instructions') ? 'instructions' as const : 'settings' as const, skill, planned, details: conflict ? details : undefined, summary }
     }))
     const dto: SyncPreview = { id: randomUUID(), createdAt: Date.now(), warnings, changes }
     this.previews.clear(); this.previews.set(dto.id, { dto, files }); return dto
   }
-  async apply(id: string, replaceInstructions = false): Promise<SyncResult> {
+  /**
+   * Writes a reviewed preview. `overwrite` lists edited-outside files the user chose to replace with
+   * AI Usage's version; `skip` lists files to leave untouched this time (a skipped edited file stays
+   * paused and is returned in `conflicts`).
+   */
+  async apply(id: string, replaceInstructions = false, options: SyncApplyOptions = {}): Promise<SyncResult> {
     const preview = this.previews.get(id)
     if (!preview || Date.now() - preview.dto.createdAt > 600_000) throw new Error('Preview expired; preview again')
-    const conflicts = preview.dto.changes.filter(c => c.conflict && !(replaceInstructions && c.target.endsWith(' instructions'))).map(c => c.path)
-    for (const file of preview.files) if (await contents(file) !== file.before || (file.beforeMode !== undefined && ((await fs.stat(file.file)).mode & 0o777) !== file.beforeMode)) conflicts.push(file.file)
+    const skip = new Set(options.skip ?? []), overwrite = new Set(options.overwrite ?? [])
+    const files = preview.files.filter(f => !skip.has(f.file))
+    const held = preview.dto.changes.filter(c => c.conflict && skip.has(c.path)).map(c => c.path)
+    const conflicts = preview.dto.changes.filter(c => c.conflict && !skip.has(c.path) && !overwrite.has(c.path) && !(replaceInstructions && c.target.endsWith(' instructions'))).map(c => c.path)
+    for (const file of files) if (await contents(file) !== file.before || (file.beforeMode !== undefined && ((await fs.stat(file.file)).mode & 0o777) !== file.beforeMode)) conflicts.push(file.file)
     if (conflicts.length) return { changed: 0, conflicts: [...new Set(conflicts)], warnings: ['Files changed outside the manager. Review and adopt their current state before retrying.'] }
     // Globally disabled skills leave the shared folder, so clients that scan it stop seeing them.
     preview.dto.warnings.push(...await this.store.placeSkills(this.store.config.disabledSkills ?? []))
-    if (!preview.files.length) { this.previews.delete(id); return this.complete({ changed: 0, conflicts: [], warnings: preview.dto.warnings }) }
+    if (!files.length) { this.previews.delete(id); return this.complete({ changed: 0, conflicts: held, warnings: preview.dto.warnings }) }
     const backupId = randomUUID(), backupPath = path.join(this.store.data, 'backups', backupId + '.json')
-    await atomicWrite(backupPath, JSON.stringify(preview.files))
+    await atomicWrite(backupPath, JSON.stringify(files))
     const applied: FileChange[] = []
-    try { for (const file of preview.files) { applied.push(file); await writeChange(file, file.after, file.afterMode) } }
+    try { for (const file of files) { applied.push(file); await writeChange(file, file.after, file.afterMode) } }
     catch (error) { for (const file of applied.reverse()) await writeChange(file, file.before, file.beforeMode); throw error }
-    await this.pruneEmptySkillDirs(preview.files.filter(f => f.after === null).map(f => f.file))
+    await this.pruneEmptySkillDirs(files.filter(f => f.after === null).map(f => f.file))
     const ledger: Ledger = JSON.parse(await readText(this.ledgerPath()) ?? '{"hashes":{},"names":[]}')
     ledger.baselines ??= {}
-    for (const file of preview.files) { if (file.after === null) { delete ledger.hashes[file.file]; delete ledger.baselines[file.file] } else { ledger.hashes[file.file] = hash(file.after); ledger.baselines[file.file] = file.after } }
+    for (const file of files) { if (file.after === null) { delete ledger.hashes[file.file]; delete ledger.baselines[file.file] } else { ledger.hashes[file.file] = hash(file.after); ledger.baselines[file.file] = file.after } }
     ledger.names = Object.keys(await this.store.mcpRaw()); await atomicWrite(this.ledgerPath(), JSON.stringify(ledger))
     this.previews.delete(id)
-    return this.complete({ changed: preview.files.length, conflicts: [], backupId, warnings: preview.dto.warnings })
+    return this.complete({ changed: files.length, conflicts: held, backupId, warnings: preview.dto.warnings })
   }
   async sync(replaceInstructions = false): Promise<SyncResult> {
     if (!replaceInstructions) return this.apply((await this.preview()).id)

@@ -76,15 +76,15 @@ describe.skipIf(!executable)('native MCP ownership and virtual sessions', () => 
     for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow()
     expect(() => process.kill(process.pid, 0)).not.toThrow()
   }, 15_000)
-  it('reserves capacity for discovery when six isolated workers are resident', async () => {
+  it('admits many stateful workers, including several for the same server', async () => {
     const f = await setup()
-    const workers = Array.from({ length: 6 }, (_, i) => f.supervisor.transport('stateful-' + i, f.spec))
+    // Several agent sessions each hold their own stateful worker; the old 6-stateful / 2-per-server cap refused these.
+    const workers = [...Array.from({ length: 8 }, (_, i) => f.supervisor.transport('stateful-' + i, f.spec)), ...Array.from({ length: 4 }, () => f.supervisor.transport('same-server', f.spec))]
     for (const worker of workers) { await worker.start(); closers.push(() => worker.close()) }
-    const ninth = f.supervisor.transport('overflow', f.spec)
-    await expect(ninth.start()).rejects.toThrow('Pool saturated')
+    await f.supervisor.refresh(); expect(f.supervisor.status.workers.length).toBeGreaterThanOrEqual(12)
     const s = f.session(); await s.send(f.initialize)
     expect(f.frames[0][0].result.serverInfo.name).toBe('fixture')
-  })
+  }, 30_000)
   it.each(['disconnect', 'quit', 'crash'])('cleans owned trees on %s', async mode => {
     const f = await setup(), s = f.session(); await s.send(f.initialize)
     await s.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'fixture', arguments: { children: true } } })

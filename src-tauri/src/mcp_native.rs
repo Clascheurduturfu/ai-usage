@@ -10,6 +10,8 @@ use std::{
 mod process_tree;
 use process_tree::Tree;
 type Writer = Arc<Mutex<TcpStream>>;
+/// Runaway guard only, far above any real number of open sessions × servers.
+const MAX_WORKERS: usize = 256;
 struct Worker {
     name: String,
     kind: String,
@@ -236,7 +238,6 @@ fn serve(mut stream: TcpStream, state: Arc<State>) {
         );
         return;
     }
-    // Reserve two resident slots for stateless calls/discovery. Admission fails explicitly.
     let mut workers = state.workers.lock().unwrap();
     if state.paused.lock().unwrap().contains(&name) {
         send(
@@ -245,18 +246,13 @@ fn serve(mut stream: TcpStream, state: Arc<State>) {
         );
         return;
     }
-    if workers.len() >= 8
-        || (kind == "stateful" && workers.values().filter(|w| w.kind == "stateful").count() >= 6)
-        || (kind != "discovery"
-            && workers
-                .values()
-                .filter(|w| w.name == name && w.kind != "discovery")
-                .count()
-                >= 2)
-    {
+    // No per-kind or per-server quota: every client session gets its own stateful worker,
+    // however many sessions are open. This only stops a runaway client from spawning
+    // processes without end.
+    if workers.len() >= MAX_WORKERS {
         send(
             &out,
-            json!({"error":"Pool saturated: stop an idle stateful MCP or close its client. Discovery/stateless capacity is reserved."}),
+            json!({"error":format!("Too many MCP workers ({MAX_WORKERS}) are running. Close unused agent sessions or stop an MCP in AI Usage.")}),
         );
         return;
     }

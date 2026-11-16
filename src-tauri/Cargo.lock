@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage"
-version = "1.0.0-rc.10"
+version = "1.0.0-rc.11"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

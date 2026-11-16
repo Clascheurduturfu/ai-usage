@@ -589,3 +589,31 @@ dialog.confirm-dialog::backdrop {
 .btn-danger { background: color-mix(in srgb, var(--bad) 16%, var(--panel-2)); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 26%, var(--panel-2)); filter: none; }
 @media (max-width: 720px) { .skill-folder-head { flex-wrap: wrap; } .skill-folder-actions { margin-left: auto; } }
+
+/* 1.0.0-rc.11: clearer sync review — actions, planned writes, skills grouped, per-file choice */
+.sync-row > svg { color: var(--muted); margin-top: 1px; }
+.sync-row { align-items: flex-start; }
+.sync-row-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.sync-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid transparent; }
+.sync-badge-add { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+.sync-badge-update { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sync-badge-remove { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.sync-details { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.sync-details span { color: var(--muted); }
+.sync-details-warn { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.sync-details-warn span { color: var(--warn); }
+.sync-files { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.sync-files summary { cursor: pointer; width: fit-content; }
+.sync-files ul { list-style: none; margin-top: 6px; max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 4px; }
+.sync-hint { font-size: 11px; line-height: 1.6; color: var(--muted); max-width: 76ch; }
+.sync-choice { margin-top: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.sync-choice button { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line, color-mix(in srgb, var(--muted) 30%, transparent)); background: var(--panel); color: var(--text); cursor: pointer; }
+.sync-choice button strong { font-size: 12px; }
+.sync-choice button small { font-size: 11px; line-height: 1.5; color: var(--muted); }
+.sync-choice button:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.sync-choice button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); box-shadow: inset 0 0 0 1px var(--accent); }
+.sync-choice button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sync-row-skipped { opacity: .75; }
+.sync-apply { align-items: center; flex-wrap: wrap; }
+.sync-apply .muted { font-size: 11px; }
+.sync-row-attention > svg { color: var(--warn); }
