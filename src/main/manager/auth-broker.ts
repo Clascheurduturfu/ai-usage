@@ -349,6 +349,7 @@ export class McpAuthBroker {
                 local = this.localRuntime.session(serverName!, resolved, reply, frame.clientPid)
                 await local.send(msg); if (!socket.destroyed) this.sessions.set(socket, { name: serverName!, kind: 'local' }); this.notify(); return
               }
+              if (!spec) throw new Error(`${serverName} was removed from AI Usage's shared library. Sync agents in AI Usage to remove it from this client, then restart the client.`)
               if (!this.store.config.mcpAuth?.[serverName!]?.enabled) throw new Error(`${serverName} is not set to connect through AI Usage on this device. Enable it in AI Usage → Shared library → MCP, then restart this client.`)
               if (!spec?.url || spec.command) throw new Error('This relay requires a remote HTTP MCP')
               if (client) throw new Error('This MCP is already initialized')

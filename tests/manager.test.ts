@@ -74,6 +74,30 @@ describe('shared manager writes', () => {
     expect((await engine.apply(again.id, false, { overwrite: [claude] })).conflicts).toEqual([])
     expect(JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers.shared.args).toContain('--relay')
   })
+  it('keeps tracking a removed server until every client that lists it has been rewritten', async () => {
+    const { home, store, engine } = await fixture(); expect((await engine.sync()).conflicts).toEqual([])
+    const claude = path.join(home, '.claude.json'), master = path.join(store.pool, 'mcp.json')
+    const raw = JSON.parse(await fs.readFile(master, 'utf8')); delete raw.mcpServers.remote; await atomicWrite(master, JSON.stringify(raw))
+    // Leave Claude Code's file alone this time: its "remote" entry must not become an orphan.
+    const first = await engine.preview(); await engine.apply(first.id, false, { skip: [claude] })
+    expect(JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers.remote).toBeDefined()
+    expect(toml(await fs.readFile(path.join(home, '.codex/config.toml'), 'utf8')) as any).not.toHaveProperty('mcp_servers.remote')
+    const second = await engine.preview(), change = second.changes.find(c => c.path === claude)!
+    expect(change.planned?.some(line => /Removes MCP server “remote”/.test(line))).toBe(true)
+    await engine.apply(second.id)
+    expect(JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers.remote).toBeUndefined()
+  })
+  it('removes AI Usage relay entries whose name the ledger already lost', async () => {
+    const { home, engine } = await fixture()
+    const claude = path.join(home, '.claude.json'), relay = '/Applications/AI Usage.app/Contents/MacOS/aiu-mcp'
+    await atomicWrite(claude, JSON.stringify({ mcpServers: { custom: { command: 'own' }, 'aws-mcp': { command: relay, args: ['--relay', 'aws-mcp'] }, legacy: { command: process.execPath, args: [path.join(home, 'manager.mjs'), '--relay', 'legacy'] }, lookalike: { command: 'other-tool', args: ['--relay', 'x'] } } }))
+    const preview = await engine.preview(), change = preview.changes.find(c => c.path === claude)!
+    expect(change.planned?.some(line => /Removes MCP server “aws-mcp”/.test(line))).toBe(true)
+    await engine.apply(preview.id)
+    const servers = JSON.parse(await fs.readFile(claude, 'utf8')).mcpServers
+    expect(servers['aws-mcp']).toBeUndefined(); expect(servers.legacy).toBeUndefined()
+    expect(servers.custom.command).toBe('own'); expect(servers.lookalike.command).toBe('other-tool')
+  })
   it('restores original bytes and refuses to overwrite edits after a sync', async () => {
     const { home, engine } = await fixture(), original = await fs.readFile(path.join(home, '.codex/config.toml'), 'utf8')
     const result = await engine.sync(); expect((await engine.restore(result.backupId!)).conflicts).toEqual([])

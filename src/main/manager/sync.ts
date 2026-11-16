@@ -23,11 +23,22 @@ const INSTRUCTIONS_END = '<!-- /AI Usage shared instructions -->'
 const SKILL_TARGET_ROOTS = ['.claude/skills', '.gemini/config/skills', '.gemini/antigravity-cli/skills'] as const
 type FileChange = { file: string; before: string | null; after: string | null; target: string; encoding?: 'base64'; unmanagedConflict?: boolean; beforeMode?: number; afterMode?: number }
 type Ledger = { hashes: Record<string, string>; names: string[]; baselines?: Record<string, string> }
+/**
+ * An MCP entry that launches AI Usage's own relay (aiu-mcp, or node + manager.mjs with --relay/--workspace).
+ * Only AI Usage writes these, so they stay managed even when the ledger has lost their name.
+ */
+export function isAiUsageRelay(spec: any, runtime: { relay?: string; cli?: string } = {}): boolean {
+  if (!spec || typeof spec !== 'object') return false
+  const parts: string[] = (Array.isArray(spec.command) ? spec.command : [spec.command, ...(Array.isArray(spec.args) ? spec.args : [])]).map((v: unknown) => String(v ?? ''))
+  if (!parts.includes('--relay') && !parts.includes('--workspace')) return false
+  const base = (file: string): string => path.posix.basename(file.replace(/\\/g, '/')).toLowerCase()
+  return /^aiu-mcp(?:\.exe)?$/.test(base(parts[0])) || parts.slice(0, 2).some(p => (!!runtime.cli && p === runtime.cli) || (!!runtime.relay && p === runtime.relay) || base(p) === 'manager.mjs')
+}
 const stable = (v: any): string => JSON.stringify(v, (_key, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.keys(value).sort().map(k => [k, value[k]])) : value)
 async function contents(file: FileChange): Promise<string | null> { if (!file.encoding) return readText(file.file); try { return (await fs.readFile(file.file)).toString('base64') } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e } }
 async function writeChange(file: FileChange, value: string | null, mode?: number): Promise<void> { if (value === null) await fs.rm(file.file, { force: true }); else { await atomicWrite(file.file, file.encoding ? Buffer.from(value, 'base64') : value); if (mode !== undefined) await fs.chmod(file.file, mode) } }
 export class SyncEngine {
-  private previews = new Map<string, { dto: SyncPreview; files: FileChange[] }>()
+  private previews = new Map<string, { dto: SyncPreview; files: FileChange[]; names: string[]; lingering: Map<string, string[]>; unread: string[] }>()
   readonly antigravity: AntigravityClient
   constructor(private store: ManagerStore, private home: string) { this.antigravity = new AntigravityClient(home) }
   private async complete(result: SyncResult): Promise<SyncResult> {
@@ -211,6 +222,9 @@ export class SyncEngine {
     const ledger: Ledger = JSON.parse(await readText(this.ledgerPath()) ?? '{"hashes":{},"names":[]}')
     const managed = new Set([...ledger.names, ...names])
     const files: FileChange[] = [], warnings: string[] = [...setupWarnings]
+    // Server names a client file still lists that this sync removes from it. If that file is not
+    // written (skipped, or unreadable), the ledger must keep tracking those names for next time.
+    const lingering = new Map<string, string[]>(), unread: string[] = []
     const agents = await this.agents()
     const installedIds = new Set(agents.filter(a => a.installed).map(a => a.id))
     const wantFor = (id: AgentId): boolean => {
@@ -250,11 +264,15 @@ export class SyncEngine {
       let doc: any
       try { doc = agent.id === 'codex' ? parseToml(text ?? '') : parseJson(text ?? '{}', errors, { allowTrailingComma: true }) }
       catch { errors.push({ error: 1, offset: 0, length: 0 }) }
-      if (errors.length || !doc || typeof doc !== 'object' || Array.isArray(doc)) { warnings.push(`${agent.name}: cannot parse ${agent.configPath}; kept this client's files unchanged`); continue }
+      if (errors.length || !doc || typeof doc !== 'object' || Array.isArray(doc)) { unread.push(...ledger.names); warnings.push(`${agent.name}: cannot parse ${agent.configPath}; kept this client's files unchanged`); continue }
       const section = agent.id === 'codex' ? 'mcp_servers' : agent.id === 'opencode' ? 'mcp' : 'mcpServers'
       const old = agent.id === 'zcode' ? doc.mcp?.servers ?? {} : doc[section] ?? {}
-      if (!old || typeof old !== 'object' || Array.isArray(old)) { warnings.push(`${agent.name}: invalid MCP server map in ${agent.configPath}; kept it unchanged`); continue }
+      if (!old || typeof old !== 'object' || Array.isArray(old)) { unread.push(...ledger.names); warnings.push(`${agent.name}: invalid MCP server map in ${agent.configPath}; kept it unchanged`); continue }
+      // Relay entries are AI Usage's even when an older sync lost track of their name.
+      for (const [n, spec] of Object.entries(old)) if (!managed.has(n) && isAiUsageRelay(spec, runtime)) managed.add(n)
       const servers: Record<string, any> = Object.fromEntries(Object.entries(old).filter(([n]) => !managed.has(n) || (agent.id === 'codex' && n === 'node_repl')))
+      const leaving = Object.keys(old).filter(n => managed.has(n) && !(agent.id === 'codex' && n === 'node_repl') && !(n in master))
+      if (leaving.length) lingering.set(agent.configPath, leaving)
       for (const [name, s] of entries) {
         const local = !!s.command
         const base: any = local ? { command: s.command, args: s.args ?? [], ...(s.env ? { env: s.env } : {}) } : { url: s.url, ...(s.headers ? { headers: s.headers } : {}) }
@@ -351,7 +369,7 @@ export class SyncEngine {
       return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, action, kind: f.encoding ? 'skill' as const : f.target.endsWith(' instructions') ? 'instructions' as const : 'settings' as const, skill, planned, details: conflict ? details : undefined, summary }
     }))
     const dto: SyncPreview = { id: randomUUID(), createdAt: Date.now(), warnings, changes }
-    this.previews.clear(); this.previews.set(dto.id, { dto, files }); return dto
+    this.previews.clear(); this.previews.set(dto.id, { dto, files, names, lingering, unread }); return dto
   }
   /**
    * Writes a reviewed preview. `overwrite` lists edited-outside files the user chose to replace with
@@ -379,7 +397,10 @@ export class SyncEngine {
     const ledger: Ledger = JSON.parse(await readText(this.ledgerPath()) ?? '{"hashes":{},"names":[]}')
     ledger.baselines ??= {}
     for (const file of files) { if (file.after === null) { delete ledger.hashes[file.file]; delete ledger.baselines[file.file] } else { ledger.hashes[file.file] = hash(file.after); ledger.baselines[file.file] = file.after } }
-    ledger.names = Object.keys(await this.store.mcpRaw()); await atomicWrite(this.ledgerPath(), JSON.stringify(ledger))
+    // Track what this sync actually wrote: the master as previewed, plus any removed name that a
+    // file not written this time (skipped, unchanged-on-error or unreadable) still lists.
+    const written = new Set(files.map(f => f.file)), kept = [...preview.lingering].filter(([file]) => !written.has(file)).flatMap(([, names]) => names)
+    ledger.names = [...new Set([...preview.names, ...kept, ...preview.unread])]; await atomicWrite(this.ledgerPath(), JSON.stringify(ledger))
     this.previews.delete(id)
     return this.complete({ changed: files.length, conflicts: held, backupId, warnings: preview.dto.warnings })
   }
