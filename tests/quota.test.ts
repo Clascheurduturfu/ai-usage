@@ -210,6 +210,18 @@ describe('Android sync snapshot builder', () => {
 })
 
 describe('geminiBucketsFromModels', () => {
+  it('reads an exhausted model (proto3 omits remainingFraction 0) as 0%, not as missing', () => {
+    // Live response shape, 2026-11-16: Gemini entries carry only a resetTime.
+    const buckets = geminiBucketsFromModels([
+      { id: 'claude-opus-5-5-high', remainingFraction: 0.95, resetTime: '2026-11-16T22:43:08Z' },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', resetTime: '2026-11-21T09:35:25Z' },
+      { id: 'gemini-3-flash', label: 'Gemini 3 Flash', resetTime: '2026-11-21T09:35:25Z' },
+      { id: 'tab_flash_lite_preview', remainingFraction: 1 },
+      { id: 'gemini-unknown' }
+    ])
+    expect(buckets).toEqual([expect.objectContaining({ id: 'gemini', remainingFraction: 0, resetTime: Date.parse('2026-11-21T09:35:25Z') })])
+  })
+
   it('combines matching Pro and Flash quotas and ignores non-Gemini models', () => {
     const buckets = geminiBucketsFromModels([
       { id: 'claude-sonnet-4-6', remainingFraction: 0.2 },

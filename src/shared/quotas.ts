@@ -1,4 +1,4 @@
-import type { OverviewDTO, QuotaCardId, QuotaSnapshotDTO, Settings } from './types'
+import type { BlockInfo, OverviewDTO, QuotaCardId, QuotaSnapshotDTO, Settings } from './types'
 
 export interface QuotaWindow { id: string; label: string; remaining: number; resetAt: number | null }
 export interface QuotaCard {
@@ -36,12 +36,22 @@ export function makeQuotaCards(quota: QuotaSnapshotDTO | null, settings: Setting
     { id: 'openrouter', name: QUOTA_NAMES.openrouter, subtitle: 'Monthly BYOK allowance', plan: 'Monthly allowance', windows: validSpend && allowance > 0 ? [{ id: 'allowance', label: 'Monthly allowance', remaining: clamp((allowance - or!.byokUsageMonthly!) / allowance * 100), resetAt: null }] : [],
       fetchedAt: or?.fetchedAt ?? null, error: or?.error, remainingUsd: validSpend ? Math.max(0, allowance - or!.byokUsageMonthly!) : undefined, allowance,
       detail: allowance <= 0 ? 'Set a monthly allowance in Settings.' : or ? 'Allowance configured by you. Provider spend is fetched live.' : 'Add an OpenRouter key in ZCode, then refresh.' },
-    { id: 'claude', name: QUOTA_NAMES.claude, subtitle: 'Local estimate', plan: settings.claudePlan === 'custom' ? 'Custom limit' : settings.claudePlan === 'pro' ? 'Pro' : settings.claudePlan === 'max5' ? 'Max 5x' : 'Max 20x',
-      // No active block means no Claude use on this device in the last five hours: the
-      // estimate is a full window, not "unavailable". Other devices' use is not visible here.
-      windows: settings.claude5hLimit > 0 ? [{ id: 'block', label: '5-hour token estimate', remaining: block ? clamp(100 - block.percent) : 100, resetAt: block?.end ?? null }] : [], fetchedAt: overview.scan.lastScanAt || null, estimated: true,
-      detail: settings.claude5hLimit <= 0 ? 'Set your Claude plan limit in Settings to estimate the 5-hour window.' : block ? 'Estimated from Claude Code tokens on this device and your plan limit. Use on other devices and claude.ai is not included.' : 'No Claude Code use on this device in the last 5 hours. Use on other devices and claude.ai is not included.' }
+    claudeCard(quota?.claude ?? null, settings, block, overview.scan.lastScanAt || null)
   ]
+}
+
+const PLAN_NAMES: Record<Settings['claudePlan'], string> = { custom: 'Custom limit', pro: 'Pro', max5: 'Max 5x', max20: 'Max 20x' }
+/** Live limits from Anthropic when Claude Code's CLI sign-in is available; otherwise the local token estimate. */
+function claudeCard(live: QuotaSnapshotDTO['claude'], settings: Settings, block: BlockInfo | null | undefined, scannedAt: number | null): QuotaCard {
+  if (live?.windows.length) return { id: 'claude', name: QUOTA_NAMES.claude, subtitle: 'Claude subscription', plan: live.plan ?? PLAN_NAMES[settings.claudePlan],
+    windows: live.windows.map(w => ({ id: w.id, label: w.label, remaining: clamp(100 - w.usedPercent), resetAt: w.resetAt })), fetchedAt: live.fetchedAt, error: live.error,
+    detail: 'Live limits from Anthropic, the same as Claude Code’s /usage. Includes every device and claude.ai.' }
+  const why = live?.error ? ` Live limits: ${live.error}` : ''
+  return { id: 'claude', name: QUOTA_NAMES.claude, subtitle: 'Local estimate', plan: live?.plan ?? PLAN_NAMES[settings.claudePlan],
+    // No active block means no Claude use on this device in the last five hours: the
+    // estimate is a full window, not "unavailable". Other devices' use is not visible here.
+    windows: settings.claude5hLimit > 0 ? [{ id: 'block', label: '5-hour token estimate', remaining: block ? clamp(100 - block.percent) : 100, resetAt: block?.end ?? null }] : [], fetchedAt: scannedAt, estimated: true,
+    detail: (settings.claude5hLimit <= 0 ? 'Set your Claude plan limit in Settings to estimate the 5-hour window.' : block ? 'Estimated from Claude Code tokens on this device and your plan limit. Use on other devices and claude.ai is not included.' : 'No Claude Code use on this device in the last 5 hours. Use on other devices and claude.ai is not included.') + why }
 }
 
 const short = (label: string): string => /5-hour|5 hours/i.test(label) ? '5h' : /week/i.test(label) ? 'week' : label
@@ -51,7 +61,7 @@ export function trayQuotaLine(card: QuotaCard, now: number): string {
   if (!card.windows.length) return `${card.name}: ${card.error ? 'unavailable' : card.plan === 'Not connected' ? 'not connected' : 'no data yet'}`
   let value: string
   if (card.id === 'openrouter' && card.remainingUsd !== undefined) value = `$${card.remainingUsd.toFixed(2)} left this month`
-  else if (card.id === 'claude') value = `~${Math.round(card.windows[0].remaining)}% of 5-hour estimate`
+  else if (card.id === 'claude' && card.estimated) value = `~${Math.round(card.windows[0].remaining)}% of 5-hour estimate`
   else if (card.windows.length > 2) value = `${Math.round(Math.min(...card.windows.map(w => w.remaining)))}% at tightest limit`
   else value = card.windows.map(w => `${Math.round(w.remaining)}% (${short(w.label)})`).join(' · ')
   return `${card.name}: ${value}${card.error ? ' · last known' : state === 'stale' ? ' · needs refresh' : ''}`

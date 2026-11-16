@@ -1,8 +1,10 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { Settings } from '../../shared/types'
 import { existsDir, existsFile, walkFiles } from '../paths'
-import { kvGet, kvSet, openExternalDb, upsertSnapshots } from '../db'
+import { deleteFileData, getFileIndex, kvGet, kvSet, openExternalDb, saveFileIndex, upsertEvents, upsertSnapshots } from '../db'
+import { pbFields, pbInt, pbInts, pbMessage, pbString } from '../protobuf'
 import type { DB, UpsertEvent } from '../db'
 import { JsonlParser, hashLine, n, parseJson, safeDate, scanJsonlFile } from './jsonl'
 import { ProviderAdapter, ScanOutcome } from './types'
@@ -165,11 +167,76 @@ export function createAntigravityUsageParser(
   }
 }
 
+/**
+ * Antigravity 2.x keeps each conversation in `~/.gemini/antigravity/conversations/<cascadeId>.db`.
+ * Its `gen_metadata` table holds one protobuf row per model call (the same generator metadata the
+ * Antigravity Token Monitor extension used to fetch over the local RPC, which no longer returns
+ * conversations). Layout, verified on 28,944 rows:
+ *   .1 chatModel { .4 usage { 2 input, 3 output (= 9 thinking + 10 response), 5 cache read },
+ *                  .19 model id, .21 model label, .20 repeated { 1 key, 2 value } custom metadata }
+ *   .2 packed step indices this call produced; `steps.metadata` .1 { 1 seconds, 2 nanos } is when.
+ */
+export function readConversationUsage(file: string, afterIdx: number, info: ConversationInfo | undefined): { events: UpsertEvent[]; lastIdx: number } {
+  const cascadeId = path.basename(file, '.db'), events: UpsertEvent[] = []
+  let lastIdx = afterIdx
+  const db = openExternalDb(file)
+  try {
+    const stepStmt = db.prepare('SELECT metadata FROM steps WHERE idx = ?')
+    const stepTime = (idx: number): number | null => {
+      const row = stepStmt.get(idx) as { metadata: Uint8Array | null } | undefined
+      if (!row?.metadata) return null
+      try { const at = pbMessage(pbFields(row.metadata), 1); if (!at) return null; const f = pbFields(at), s = pbInt(f, 1); return s > 0 ? s * 1000 + Math.floor(pbInt(f, 2) / 1e6) : null } catch { return null }
+    }
+    const fallback = Math.trunc(fs.statSync(file).mtimeMs)
+    let previous: number | null = null
+    for (const row of db.prepare('SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx').iterate(afterIdx) as Iterable<{ idx: number; data: Uint8Array | null }>) {
+      lastIdx = Math.max(lastIdx, row.idx)
+      if (!row.data) continue
+      let top, chat, usage
+      try { top = pbFields(row.data); const cm = pbMessage(top, 1); if (!cm) continue; chat = pbFields(cm); const u = pbMessage(chat, 4); if (!u) continue; usage = pbFields(u) } catch { continue }
+      const input = pbInt(usage, 2), output = pbInt(usage, 3), cacheRead = pbInt(usage, 5), reasoning = pbInt(usage, 9)
+      if (input + output + cacheRead === 0) continue
+      const step = pbInts(top, 2)[0]
+      const ts: number = (step !== undefined ? stepTime(step) : null) ?? previous ?? fallback
+      previous = ts
+      const meta: Record<string, unknown> = {}
+      for (const entry of chat.filter(f => f.field === 20 && f.value instanceof Uint8Array)) {
+        try { const kv = pbFields(entry.value as Uint8Array), key = pbString(kv, 1), value = pbString(kv, 2); if (value === 'true' && key === 'used_non_gemini_model') meta.nonGemini = true; if (value === 'true' && key === 'used_claude') meta.claude = true } catch { /* nested key */ }
+      }
+      const label = pbString(chat, 21)
+      if (label) meta.label = label
+      events.push({
+        id: `antigravity:${cascadeId}:g${row.idx}`, provider: 'antigravity', ts, session_id: cascadeId, project: info?.project ?? null,
+        model: pbString(chat, 19) ?? label ?? null, kind: 'tokens', input_tokens: input, output_tokens: output, cache_read_tokens: cacheRead,
+        cache_write_tokens: 0, reasoning_tokens: reasoning, cost_usd: null, source_file: null, meta: Object.keys(meta).length ? JSON.stringify(meta) : null
+      })
+    }
+  } finally { db.close() }
+  return { events, lastIdx }
+}
+
+/** Incremental scan of one conversation DB; a live WAL counts toward the change signature. */
+function scanConversation(db: DB, rawFile: string, info: ConversationInfo | undefined): number {
+  const file = rawFile.replaceAll('\\', '/')
+  const stat = fs.statSync(file), wal = (() => { try { return fs.statSync(file + '-wal') } catch { return null } })()
+  const size = stat.size + (wal?.size ?? 0), mtime = Math.trunc(Math.max(stat.mtimeMs, wal?.mtimeMs ?? 0))
+  const row = getFileIndex(db, file), state = row?.parser_state ? JSON.parse(row.parser_state) as { lastIdx?: number; __parserVersion?: number } : null
+  if (row && state?.__parserVersion === CONVERSATION_PARSER && row.size === size && row.mtime === mtime) return 0
+  const fresh = !row || state?.__parserVersion !== CONVERSATION_PARSER
+  if (fresh) deleteFileData(db, file)
+  const { events, lastIdx } = readConversationUsage(file, fresh ? -1 : state?.lastIdx ?? -1, info)
+  upsertEvents(db, events.map(e => ({ ...e, source_file: file })))
+  saveFileIndex(db, { path: file, provider: 'antigravity', size, mtime, byte_offset: 0, event_count: (fresh ? 0 : row?.event_count ?? 0) + events.length, parser_state: JSON.stringify({ lastIdx, __parserVersion: CONVERSATION_PARSER }), added: events.length })
+  return events.length
+}
+const CONVERSATION_PARSER = 1
+
 export const antigravityAdapter: ProviderAdapter = {
   id: 'antigravity',
   watchRoots(settings) {
     const root = antigravityRoot(settings)
     return [
+      { path: path.join(root, 'conversations'), recursive: false },
       { path: path.join(root, '.token-monitor', 'rpc-cache'), recursive: true },
       { path: root, recursive: false }
     ]
@@ -178,7 +245,7 @@ export const antigravityAdapter: ProviderAdapter = {
     const root = antigravityRoot(settings)
     const summaries = path.join(root, 'conversation_summaries.db')
     const artifacts = path.join(root, '.token-monitor', 'rpc-cache', 'v1')
-    const hasArtifacts = existsDir(artifacts)
+    const hasArtifacts = existsDir(artifacts) || existsDir(path.join(root, 'conversations'))
     const hasSummaries = existsFile(summaries)
     const detected = hasArtifacts || hasSummaries || existsDir(root)
     return {
@@ -187,8 +254,8 @@ export const antigravityAdapter: ProviderAdapter = {
       note:
         hasArtifacts
           ? undefined
-          : detected ? 'Antigravity detected. Conversation metadata and account quotas are separate from token usage; token counts need Antigravity Token Monitor exports.'
-          : 'No Antigravity data found. Install Google Antigravity (and the Antigravity Token Monitor extension for token-level usage).'
+          : detected ? 'Antigravity detected, but no conversation database was found yet. Start a conversation in Antigravity, then rescan.'
+          : 'No Antigravity data found. Install Google Antigravity.'
     }
   },
   scan(settings, db: DB): ScanOutcome {
@@ -222,9 +289,22 @@ export const antigravityAdapter: ProviderAdapter = {
       scanConversations = conversations
     }
 
-    // Token usage artifacts exported by the Antigravity Token Monitor extension
+    // Antigravity 2.x: token usage straight from each conversation's own database.
+    const conversationsDir = path.join(root, 'conversations'), covered = new Set<string>()
+    if (existsDir(conversationsDir)) {
+      for (const name of fs.readdirSync(conversationsDir)) {
+        if (!name.endsWith('.db')) continue
+        const id = name.slice(0, -3); covered.add(id)
+        try { const added = scanConversation(db, path.join(conversationsDir, name), scanConversations.get(id)); outcome.filesScanned++; outcome.eventsAdded += added }
+        catch (err) { outcome.errors.push(`antigravity: ${id}: ${(err as Error).message}`) }
+      }
+    }
+
+    // Older setups: artifacts exported by the Antigravity Token Monitor extension, only for
+    // sessions without their own conversation database (otherwise they would count twice).
     const cacheRoot = path.join(root, '.token-monitor', 'rpc-cache')
     for (const file of walkFiles(cacheRoot, (p) => p.endsWith('usage.jsonl'))) {
+      if (covered.has(path.basename(path.dirname(file)))) continue
       try {
         const r = scanJsonlFile(db, 'antigravity', file, () =>
           createAntigravityUsageParser(file, scanConversations), 2

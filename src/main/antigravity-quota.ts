@@ -271,6 +271,15 @@ interface AvailableModelsResp {
 
 type RawModelQuota = { id: string; label?: string; remainingFraction?: number; resetTime?: string }
 
+/**
+ * The API is proto3 JSON, which omits zero values: an exhausted model has a `resetTime` and no
+ * `remainingFraction`. Only a model with neither carries no quota information.
+ */
+export function modelRemaining(remainingFraction: unknown, resetTime: unknown): number | null {
+  if (typeof remainingFraction === 'number' && Number.isFinite(remainingFraction)) return remainingFraction
+  return typeof resetTime === 'string' && Number.isFinite(Date.parse(resetTime)) ? 0 : null
+}
+
 function hasGeminiBucket(buckets: AntigravityQuotaDTO['buckets']): boolean {
   return buckets.some((b) => /gemini/i.test(`${b.id} ${b.group} ${b.label}`))
 }
@@ -287,8 +296,8 @@ export function geminiBucketsFromModels(models: Iterable<RawModelQuota>): Antigr
   for (const model of models) {
     const text = `${model.id} ${model.label ?? ''}`
     if (!/gemini/i.test(text)) continue
-    const frac = model.remainingFraction
-    if (typeof frac !== 'number' || !Number.isFinite(frac)) continue
+    const frac = modelRemaining(model.remainingFraction, model.resetTime)
+    if (frac === null) continue
     const parsed = model.resetTime ? Date.parse(model.resetTime) : Number.NaN
     const entry = { remainingFraction: frac, resetTime: Number.isFinite(parsed) ? parsed : null }
     if (/(?:^|[-_\s])pro(?:[-_\s(]|$)/i.test(text)) pro.push(entry)
@@ -337,7 +346,8 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
       const [response, quota] = await Promise.all([antigravityRpc('GetUserStatus'), antigravityRpc('RetrieveUserQuotaSummary')])
       const user = response?.userStatus
       const grouped: AntigravityQuotaDTO['buckets'] = (quota?.response?.groups ?? []).flatMap((group: any) => (group.buckets ?? []).flatMap((bucket: any) => {
-        if (typeof bucket.remainingFraction !== 'number' || !Number.isFinite(bucket.remainingFraction)) return []
+        bucket = { ...bucket, remainingFraction: modelRemaining(bucket.remainingFraction, bucket.resetTime) }
+        if (bucket.remainingFraction === null) return []
         const reset = Date.parse(bucket.resetTime ?? '')
         return [{ id: String(bucket.bucketId ?? `${group.displayName}-${bucket.window}`), group: String(group.displayName ?? 'Quota'), label: String(bucket.displayName ?? bucket.bucketId ?? 'Quota'), window: String(bucket.window ?? ''), remainingFraction: Math.max(0, Math.min(1, bucket.remainingFraction)), resetTime: Number.isFinite(reset) ? reset : null, description: bucket.description ?? null }]
       }))
@@ -353,8 +363,8 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
       }
       if (user) {
         const buckets = (user.cascadeModelConfigData?.clientModelConfigs ?? []).flatMap((model: any) => {
-          const remaining = model.quotaInfo?.remainingFraction
-          if (typeof remaining !== 'number' || !Number.isFinite(remaining)) return []
+          const remaining = modelRemaining(model.quotaInfo?.remainingFraction, model.quotaInfo?.resetTime)
+          if (remaining === null) return []
           const label = String(model.label ?? model.modelId ?? 'Model'), reset = Date.parse(model.quotaInfo?.resetTime ?? '')
           return [{ id: String(model.modelId ?? label), group: label, label, window: '', remainingFraction: Math.max(0, Math.min(1, remaining)), resetTime: Number.isFinite(reset) ? reset : null, description: 'Reported by the running Antigravity client' }]
         })

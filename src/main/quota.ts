@@ -2,11 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { AntigravityQuotaDTO, ChatGptQuotaDTO, ChatGptWindowDTO, MistralPlanDTO, OpenRouterQuotaDTO, QuotaSnapshotDTO } from '../shared/types'
+import type { AntigravityQuotaDTO, ChatGptQuotaDTO, ClaudeQuotaDTO, ChatGptWindowDTO, MistralPlanDTO, OpenRouterQuotaDTO, QuotaSnapshotDTO } from '../shared/types'
 import type { DB } from './db'
 import { kvGet, kvSet } from './db'
 import { fetchAntigravityQuota, verifiedAntigravityClientSecret } from './antigravity-quota'
 import { fetchOpenRouterQuota } from './openrouter-quota'
+import { fetchClaudeQuota } from './claude-quota'
 import { mistralRoot, readMistralWhoamiCache } from './providers/mistral'
 import { getSettings } from './settings'
 
@@ -324,7 +325,8 @@ export function getQuotaSnapshot(db: DB): QuotaSnapshotDTO {
     chatgpt: kvGet<ChatGptQuotaDTO>(db, 'quota:chatgpt') ?? null,
     mistral: kvGet<MistralPlanDTO>(db, 'quota:mistral') ?? null,
     antigravity: kvGet<AntigravityQuotaDTO>(db, 'quota:antigravity') ?? null,
-    openrouter: kvGet<OpenRouterQuotaDTO>(db, 'quota:openrouter') ?? null
+    openrouter: kvGet<OpenRouterQuotaDTO>(db, 'quota:openrouter') ?? null,
+    claude: kvGet<ClaudeQuotaDTO>(db, 'quota:claude') ?? null
   }
 }
 
@@ -446,7 +448,12 @@ export function startQuotaService(
           if (verified && verified !== storedSecret) kvSet(db, 'antigravity:clientSecret', verified)
           if (agy) kvSet(db, 'quota:antigravity', agy)
         }),
-        update(async () => { const or = await fetchOpenRouterQuota(); if (or) kvSet(db, 'quota:openrouter', or) })
+        update(async () => { const or = await fetchOpenRouterQuota(); if (or) kvSet(db, 'quota:openrouter', or) }),
+        update(async () => {
+          // Keep the last good windows when a refresh fails, marked with the new error.
+          const claude = await fetchClaudeQuota(), previous = kvGet<ClaudeQuotaDTO>(db, 'quota:claude')
+          kvSet(db, 'quota:claude', claude.error && previous?.windows.length ? { ...previous, plan: claude.plan ?? previous.plan, error: claude.error } : claude)
+        })
       ])
 
       // Publish the sync snapshot for the Android companion (if configured)

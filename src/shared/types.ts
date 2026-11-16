@@ -308,4 +308,12 @@ export interface QuotaSnapshotDTO {
   mistral: MistralPlanDTO | null
   antigravity: AntigravityQuotaDTO | null
   openrouter: OpenRouterQuotaDTO | null
+  /** Live Claude subscription limits; absent when not fetched yet. */
+  claude?: ClaudeQuotaDTO | null
+}
+export interface ClaudeQuotaDTO {
+  fetchedAt: number
+  plan?: string
+  windows: Array<{ id: string; label: string; usedPercent: number; resetAt: number | null }>
+  error?: string
 }

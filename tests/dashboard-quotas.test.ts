@@ -62,3 +62,13 @@ describe('tray quota lines', () => {
     expect(trayQuotaLine(cards.find(c => c.id === 'claude')!, now)).toBe('Claude Code: ~100% of 5-hour estimate')
   })
 })
+
+describe('Claude live quota', () => {
+  it('parses Anthropic usage windows and plan names', async () => {
+    const { parseClaudeUsage, claudePlanName } = await import('../src/main/claude-quota')
+    expect(parseClaudeUsage({ five_hour: { utilization: 37, resets_at: '2026-11-16T22:00:00Z' }, seven_day: { utilization: 12.5, resets_at: null }, seven_day_opus: null, seven_day_sonnet: { utilization: null } } as any))
+      .toEqual([{ id: 'five_hour', label: '5-hour window', usedPercent: 37, resetAt: Date.parse('2026-11-16T22:00:00Z') }, { id: 'seven_day', label: 'Weekly window', usedPercent: 12.5, resetAt: null }])
+    expect(claudePlanName({ subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' })).toBe('Max 5x')
+    expect(claudePlanName({ subscriptionType: 'pro' })).toBe('Pro')
+  })
+})

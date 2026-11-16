@@ -1,7 +1,7 @@
 {
   "name": "ai-usage",
   "productName": "AI Usage",
-  "version": "1.0.0-rc.11",
+  "version": "1.0.0-rc.12",
   "description": "Your AI control room for quotas, usage, endpoints and shared agent libraries.",
   "author": "Clascheurduturfu",
   "license": "MIT",
