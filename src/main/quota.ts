@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { AntigravityQuotaDTO, ChatGptQuotaDTO, ClaudeQuotaDTO, ChatGptWindowDTO, MistralPlanDTO, OpenRouterQuotaDTO, QuotaSnapshotDTO } from '../shared/types'
 import type { DB } from './db'
 import { kvGet, kvSet } from './db'
-import { fetchAntigravityQuota, verifiedAntigravityClientSecret } from './antigravity-quota'
+import { carryOverBuckets, fetchAntigravityQuota, verifiedAntigravityClientSecret } from './antigravity-quota'
 import { fetchOpenRouterQuota } from './openrouter-quota'
 import { fetchClaudeQuota } from './claude-quota'
 import { mistralRoot, readMistralWhoamiCache } from './providers/mistral'
@@ -446,7 +446,7 @@ export function startQuotaService(
           const agy = await fetchAntigravityQuota(storedSecret)
           const verified = verifiedAntigravityClientSecret()
           if (verified && verified !== storedSecret) kvSet(db, 'antigravity:clientSecret', verified)
-          if (agy) kvSet(db, 'quota:antigravity', agy)
+          if (agy) kvSet(db, 'quota:antigravity', carryOverBuckets(kvGet<AntigravityQuotaDTO>(db, 'quota:antigravity'), agy))
         }),
         update(async () => { const or = await fetchOpenRouterQuota(); if (or) kvSet(db, 'quota:openrouter', or) }),
         update(async () => {

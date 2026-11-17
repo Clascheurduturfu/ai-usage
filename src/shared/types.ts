@@ -271,7 +271,11 @@ export interface AntigravityQuotaDTO {
     remainingFraction: number
     resetTime: number | null
     description: string | null
+    /** Set on a value carried over from an earlier Antigravity reading: when it was seen. */
+    observedAt?: number
   }>
+  /** antigravity = the running client's own summary; google = asked Google directly (client closed). */
+  source?: 'antigravity' | 'google'
   fetchedAt: number
   error?: string
 }

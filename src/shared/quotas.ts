@@ -8,6 +8,13 @@ export interface QuotaCard {
 }
 export const QUOTA_NAMES: Record<QuotaCardId, string> = { codex: 'ChatGPT / Codex', antigravity: 'Antigravity', openrouter: 'OpenRouter', claude: 'Claude Code' }
 const clamp = (n: number): number => Math.max(0, Math.min(100, n))
+/** "12 min ago", "3 h ago", "2 days ago". */
+export function ago(at: number, now = Date.now()): string {
+  const minutes = Math.max(0, Math.round((now - at) / 60_000))
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.round(minutes / 60)
+  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
+}
 export function quotaState(card: QuotaCard, now: number): 'unknown' | 'stale' | 'low' | 'ready' {
   if (card.error || !card.windows.length) return 'unknown'
   if ((!card.estimated && (!card.fetchedAt || now - card.fetchedAt > 45 * 60_000)) || card.windows.some((w) => w.resetAt !== null && w.resetAt <= now)) return 'stale'
@@ -31,8 +38,11 @@ export function makeQuotaCards(quota: QuotaSnapshotDTO | null, settings: Setting
     { id: 'codex', name: QUOTA_NAMES.codex, subtitle: logged ? 'Last observed in Codex logs' : 'ChatGPT subscription', plan: cg?.planType || logged?.planType || 'Not connected', windows: codexWindows, fetchedAt: cg?.fetchedAt ?? logged?.observedAt ?? null, error: cg?.error,
       detail: cg ? cg.availableCredits != null ? `${cg.availableCredits.toLocaleString()} credits available` : 'Credit balance unavailable; quota windows are fetched separately.' : 'Sign in to Codex, then refresh your quotas.' },
     { id: 'antigravity', name: QUOTA_NAMES.antigravity, subtitle: 'Google AI subscription', plan: ag?.plan || 'Not connected',
-      windows: (ag?.buckets ?? []).filter((b) => Number.isFinite(b.remainingFraction)).map((b) => ({ id: b.id, label: b.window ? `${b.group} · ${b.window === '5h' ? '5 hours' : b.window === 'weekly' ? 'Weekly' : b.window}` : b.label || b.group, remaining: clamp(b.remainingFraction * 100), resetAt: b.resetTime })),
-      fetchedAt: ag?.fetchedAt ?? null, error: ag?.error, detail: ag?.availablePromptCredits != null ? `${ag.availablePromptCredits.toLocaleString()} prompt credits available` : ag?.buckets.length ? 'Quota limits reported by Antigravity.' : 'Sign in to Antigravity to connect your plan.' },
+      windows: (ag?.buckets ?? []).filter((b) => Number.isFinite(b.remainingFraction)).map((b) => ({ id: b.id, label: (b.window ? `${b.group} · ${b.window === '5h' ? '5 hours' : b.window === 'weekly' ? 'Weekly' : b.window}` : b.label || b.group) + (b.observedAt ? ` · as of ${ago(b.observedAt)}` : ''), remaining: clamp(b.remainingFraction * 100), resetAt: b.resetTime })),
+      fetchedAt: ag?.fetchedAt ?? null, error: ag?.error, detail: ag?.availablePromptCredits != null ? `${ag.availablePromptCredits.toLocaleString()} prompt credits available`
+        : !ag?.buckets.length ? 'Sign in to Antigravity to connect your plan.'
+        : ag.source === 'google' ? `Antigravity is closed, so these limits come from Google directly.${ag.buckets.some(b => b.observedAt) ? ' Limits only Antigravity reports show their last value.' : ' Open Antigravity once to also see the limits only it reports, such as Gemini 4 Argon.'}`
+        : 'Quota limits reported by Antigravity.' },
     { id: 'openrouter', name: QUOTA_NAMES.openrouter, subtitle: 'Monthly BYOK allowance', plan: 'Monthly allowance', windows: validSpend && allowance > 0 ? [{ id: 'allowance', label: 'Monthly allowance', remaining: clamp((allowance - or!.byokUsageMonthly!) / allowance * 100), resetAt: null }] : [],
       fetchedAt: or?.fetchedAt ?? null, error: or?.error, remainingUsd: validSpend ? Math.max(0, allowance - or!.byokUsageMonthly!) : undefined, allowance,
       detail: allowance <= 0 ? 'Set a monthly allowance in Settings.' : or ? 'Allowance configured by you. Provider spend is fetched live.' : 'Add an OpenRouter key in ZCode, then refresh.' },

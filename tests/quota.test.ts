@@ -5,7 +5,9 @@ import { DatabaseSync as Database } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   antigravityBinaryCandidates,
+  carryOverBuckets,
   extractAntigravityRefreshToken,
+  geminiWindowsFromHosts,
   findAntigravityClientSecret,
   geminiBucketsFromModels,
   resetClientSecretCache
@@ -206,6 +208,43 @@ describe('Android sync snapshot builder', () => {
   it('omits missing cards', () => {
     const snapshot = buildSyncSnapshot({ chatgpt: null, mistral: null, antigravity: null, openrouter: null }, '1.2.0')
     expect(snapshot['cards']).toEqual([])
+  })
+})
+
+describe('Gemini limits while Antigravity is closed', () => {
+  const now = Date.parse('2026-11-17T14:15:00Z')
+  // Live shapes from 2026-11-17: one host answers with the weekly window, the other with the 5-hour one.
+  const weekly = [{ modelId: 'claude-opus-5-5-high', remainingFraction: 0.89, resetTime: '2026-11-17T14:31:27Z' }, { modelId: 'gemini-3.8-flash-tiered', resetTime: '2026-11-21T09:35:25Z' }, { modelId: 'gemini-4-hydrogen-sonar', resetTime: '2026-11-21T09:35:25Z' }, { modelId: 'tab_flash_lite_preview', remainingFraction: 1 }]
+  const fiveHour = [{ modelId: 'gemini-3.8-flash-tiered', remainingFraction: 1, resetTime: '2026-11-17T19:15:03Z' }, { modelId: 'gemini-2.5-pro', remainingFraction: 1, resetTime: '2026-11-17T19:15:03Z' }]
+
+  it('reads the weekly and 5-hour Gemini windows from per-model quotas, whichever host answers', () => {
+    for (const hosts of [[weekly, fiveHour], [fiveHour, weekly]]) {
+      expect(geminiWindowsFromHosts(hosts, now).map(b => [b.id, b.window, b.remainingFraction, b.resetTime])).toEqual([
+        ['gemini-weekly', 'weekly', 0, Date.parse('2026-11-21T09:35:25Z')],
+        ['gemini-5h', '5h', 1, Date.parse('2026-11-17T19:15:03Z')]
+      ])
+    }
+  })
+
+  it('places a lone answer by how soon it resets', () => {
+    expect(geminiWindowsFromHosts([fiveHour], now).map(b => b.window)).toEqual(['5h'])
+    expect(geminiWindowsFromHosts([weekly], now).map(b => b.window)).toEqual(['weekly'])
+    expect(geminiWindowsFromHosts([[{ modelId: 'claude-opus-5-5-high', remainingFraction: 1, resetTime: '2026-11-17T19:00:00Z' }]], now)).toEqual([])
+  })
+
+  it('keeps the last Argon value from Antigravity, with when it was seen, until it resets', () => {
+    const argon = { id: 'gemini-argon-wtu-weekly', group: 'Gemini 4 Argon', label: 'Gemini 4 Argon Weekly Limit', window: 'weekly', remainingFraction: 0.33, resetTime: Date.parse('2026-11-21T13:13:28Z'), description: null }
+    const local = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'antigravity' as const, fetchedAt: now - 3 * 3_600_000, buckets: [{ ...argon, id: 'gemini-weekly', group: 'Gemini Models', label: 'Weekly Limit Remaining', remainingFraction: 0.5 }, argon] }
+    const closed = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'google' as const, fetchedAt: now, buckets: geminiWindowsFromHosts([weekly, fiveHour], now) }
+    const merged = carryOverBuckets(local, closed, now)
+    expect(merged.buckets.map(b => b.id)).toEqual(['gemini-weekly', 'gemini-5h', 'gemini-argon-wtu-weekly'])
+    expect(merged.buckets.find(b => b.id === 'gemini-weekly')!.remainingFraction).toBe(0) // live, not the old 50%
+    expect(merged.buckets.at(-1)!.observedAt).toBe(now - 3 * 3_600_000)
+    // A second closed refresh keeps the original sighting time; after the reset the value is dropped.
+    expect(carryOverBuckets(merged, closed, now + 3_600_000).buckets.at(-1)!.observedAt).toBe(now - 3 * 3_600_000)
+    expect(carryOverBuckets(merged, closed, Date.parse('2026-11-21T14:00:00Z')).buckets.map(b => b.id)).not.toContain('gemini-argon-wtu-weekly')
+    // Once Antigravity reports again, its own reading replaces everything.
+    expect(carryOverBuckets(merged, local, now)).toBe(local)
   })
 })
 

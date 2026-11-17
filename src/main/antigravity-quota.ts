@@ -22,6 +22,8 @@ import { antigravityRpc } from './antigravity-rpc'
 const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com'
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com'
+// Google answers per-model quota from both hosts, one per Gemini window (see geminiWindowsFromHosts).
+const CLOUDCODE_HOSTS = ['https://daily-cloudcode-pa.googleapis.com', 'https://cloudcode-pa.googleapis.com']
 const SECRET_REGEX = /GOCSPX-[A-Za-z0-9_-]{28}/g
 
 export function antigravityBinaryCandidates(): string[] {
@@ -317,8 +319,55 @@ export function geminiBucketsFromModels(models: Iterable<RawModelQuota>): Antigr
   return [{ id: 'gemini', group: 'Gemini models', label: 'Gemini models', window: '', ...all, description: 'Google Gemini models' }]
 }
 
-async function cloudcodePost<T>(endpoint: string, accessToken: string, payload: unknown): Promise<T> {
-  const res = await fetch(`${CLOUDCODE_BASE}/v1internal:${endpoint}`, {
+export type ModelQuotaEntry = { modelId?: string; remainingFraction?: number; resetTime?: string }
+const FIVE_HOURS = 5 * 3_600_000
+const GEMINI_WINDOWS = { weekly: 'Weekly Limit Remaining', '5h': 'Five Hour Limit Remaining' } as const
+
+/**
+ * The Gemini weekly and 5-hour limits without the running client. Google's summary leaves the Gemini
+ * group out, but its per-model quota (`retrieveUserQuota`) carries both windows: each host answers
+ * with one of them, all Gemini models sharing one fraction and reset time. Checked on 2026-11-17
+ * against Antigravity's own panel (weekly 0% resetting in 4 days, 5h 100% resetting in 5 h).
+ * The window comes from the reset time, not from which host answered: of two answers the later
+ * reset is the weekly one, and a lone answer resetting within about 5 hours is the 5-hour one.
+ */
+export function geminiWindowsFromHosts(hosts: ModelQuotaEntry[][], now = Date.now()): AntigravityQuotaDTO['buckets'] {
+  const summaries = hosts.flatMap(entries => {
+    const gemini = entries.filter(e => /gemini/i.test(e.modelId ?? '') && !!e.resetTime && Number.isFinite(Date.parse(e.resetTime)))
+    // Prefer the models Antigravity groups under "Gemini Models"; other Gemini models can carry their own limits.
+    const grouped = gemini.filter(e => /gemini-4-hydrogen|gemini-3\.8-flash/i.test(e.modelId!))
+    const list = grouped.length ? grouped : gemini
+    if (!list.length) return []
+    const remaining = Math.min(...list.map(e => modelRemaining(e.remainingFraction, e.resetTime) ?? 1))
+    return [{ remaining: Math.max(0, Math.min(1, remaining)), reset: Math.min(...list.map(e => Date.parse(e.resetTime!))) }]
+  }).sort((a, b) => a.reset - b.reset)
+  if (!summaries.length) return []
+  const windows: Array<['weekly' | '5h', { remaining: number; reset: number }]> = summaries.length >= 2
+    ? [['weekly', summaries[summaries.length - 1]], ['5h', summaries[0]]]
+    : [[summaries[0].reset - now <= FIVE_HOURS + 30 * 60_000 ? '5h' : 'weekly', summaries[0]]]
+  return windows.map(([window, w]) => ({
+    id: `gemini-${window}`, group: 'Gemini Models', label: GEMINI_WINDOWS[window], window,
+    remainingFraction: w.remaining, resetTime: w.reset, description: 'Reported by Google per model while Antigravity is closed'
+  }))
+}
+
+/**
+ * Keep quota groups only the running client reports (Gemini 4 Argon) when Antigravity is closed:
+ * the last value seen, marked with when it was seen. Dropped once its reset time passes or after a week.
+ */
+export function carryOverBuckets(previous: AntigravityQuotaDTO | null | undefined, next: AntigravityQuotaDTO, now = Date.now()): AntigravityQuotaDTO {
+  if (next.source !== 'google' || !previous?.buckets.length) return next
+  const groups = new Set(next.buckets.map(b => b.group.toLowerCase()))
+  const kept = previous.buckets.filter(b => !groups.has(b.group.toLowerCase()) && !/^gemini( pro| flash)?( models)?$/i.test(b.group)).flatMap(b => {
+    const observedAt = b.observedAt ?? previous.fetchedAt
+    if ((b.resetTime !== null && b.resetTime <= now) || now - observedAt > 7 * 86_400_000) return []
+    return [{ ...b, observedAt }]
+  })
+  return kept.length ? { ...next, buckets: [...next.buckets, ...kept], error: undefined } : next
+}
+
+async function cloudcodePost<T>(endpoint: string, accessToken: string, payload: unknown, base = CLOUDCODE_BASE): Promise<T> {
+  const res = await fetch(`${base}/v1internal:${endpoint}`, {
     signal: AbortSignal.timeout(15_000),
     method: 'POST',
     headers: {
@@ -360,7 +409,7 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
       }))
       if (grouped.length) {
         const buckets = hasGeminiBucket(grouped) ? grouped : [...grouped, ...geminiBucketsFromModels(clientModels)]
-        return { ...base, fetchedAt: Date.now(), plan: user?.userTier?.name ?? user?.planStatus?.planInfo?.planName ?? 'unknown', buckets }
+        return { ...base, source: 'antigravity', fetchedAt: Date.now(), plan: user?.userTier?.name ?? user?.planStatus?.planInfo?.planName ?? 'unknown', buckets }
       }
       if (user) {
         const buckets = (user.cascadeModelConfigData?.clientModelConfigs ?? []).flatMap((model: any) => {
@@ -369,7 +418,7 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
           const label = String(model.label ?? model.modelId ?? 'Model'), reset = Date.parse(model.quotaInfo?.resetTime ?? '')
           return [{ id: String(model.modelId ?? label), group: label, label, window: '', remainingFraction: Math.max(0, Math.min(1, remaining)), resetTime: Number.isFinite(reset) ? reset : null, description: 'Reported by the running Antigravity client' }]
         })
-        if (buckets.length) return { ...base, fetchedAt: Date.now(), plan: user.userTier?.name ?? user.planStatus?.planInfo?.planName ?? 'unknown', buckets }
+        if (buckets.length) return { ...base, source: 'antigravity', fetchedAt: Date.now(), plan: user.userTier?.name ?? user.planStatus?.planInfo?.planName ?? 'unknown', buckets }
       }
     }
     const standalone = standaloneToken(), file = stateDbPath()
@@ -420,10 +469,12 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
     if (!accessToken) throw new Error('Antigravity did not provide an access token')
 
     const payload = projectId ? { project: projectId } : {}
-    const [summaryResult, modelsResult] = await Promise.allSettled([
+    const [summaryResult, modelsResult, ...hostResults] = await Promise.allSettled([
       cloudcodePost<QuotaSummaryResp>('retrieveUserQuotaSummary', accessToken, payload),
-      cloudcodePost<AvailableModelsResp>('fetchAvailableModels', accessToken, payload)
+      cloudcodePost<AvailableModelsResp>('fetchAvailableModels', accessToken, payload),
+      ...CLOUDCODE_HOSTS.map(host => cloudcodePost<{ buckets?: ModelQuotaEntry[] }>('retrieveUserQuota', accessToken!, payload, host))
     ])
+    const geminiWindows = geminiWindowsFromHosts(hostResults.flatMap(r => r.status === 'fulfilled' ? [r.value.buckets ?? []] : []))
     if (summaryResult.status === 'rejected' && modelsResult.status === 'rejected') {
       return { ...base, plan, error: `Quota summary unavailable: ${(summaryResult.reason as Error).message}` }
     }
@@ -450,10 +501,12 @@ export async function fetchAntigravityQuota(clientSecret?: string): Promise<Anti
       : []
     const buckets = hasGeminiBucket(summaryBuckets)
       ? summaryBuckets
-      : [...summaryBuckets, ...geminiBucketsFromModels(modelEntries)]
+      // Gemini first, in the same order as Antigravity's own Usage panel.
+      : geminiWindows.length ? [...geminiWindows, ...summaryBuckets] : [...summaryBuckets, ...geminiBucketsFromModels(modelEntries)]
 
     return {
       ...base,
+      source: 'google',
       plan,
       availablePromptCredits: load.availablePromptCredits ?? null,
       monthlyPromptCredits: load.planInfo?.monthlyPromptCredits ?? null,
