@@ -367,7 +367,17 @@ fn leave_dock(app: &tauri::AppHandle) {
 fn open_window(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     { let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular); let _ = app.set_dock_visibility(true); }
-    if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); return; }
+    if let Some(window) = app.get_webview_window("main") {
+        // show() + set_focus() leave a window minimized to the taskbar where it is: restore it first.
+        if window.is_minimized().unwrap_or(false) { let _ = window.unminimize(); }
+        let _ = window.show();
+        // Windows can refuse a plain focus request and only flash the taskbar button; a brief
+        // topmost toggle brings the window above the others without keeping it pinned there.
+        #[cfg(target_os = "windows")]
+        { let _ = window.set_always_on_top(true); let _ = window.set_always_on_top(false); }
+        let _ = window.set_focus();
+        return;
+    }
     let saved: Value = std::fs::read_to_string(profile_directory().join("window.json")).ok().and_then(|v| serde_json::from_str(&v).ok()).unwrap_or(Value::Null);
     let width = saved["width"].as_f64().unwrap_or(1440.0).clamp(760.0, 3840.0);
     let height = saved["height"].as_f64().unwrap_or(920.0).clamp(600.0, 2160.0);

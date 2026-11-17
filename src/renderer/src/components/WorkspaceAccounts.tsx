@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus, ShieldCheck, X } from 'lucide-react'
 import type { WorkspaceStatus } from '../../../shared/manager'
 import { validateWorkspaceAccount } from '../../../shared/workspace-account'
 import { api } from '../lib/ipc'
@@ -18,7 +18,7 @@ export function WorkspaceAccounts({ status, act, busy }: { status?: WorkspaceSta
     } catch (e) { setError((e as Error).message) }
   }
   return <div className="manager-workspace">
-    <div className="workspace-heading"><div><strong>Official gws · Google accounts</strong><p className="muted">Each account has its own name and sign-in. All saved accounts travel with encrypted Sharing.</p></div><Btn disabled={busy || !status?.oauthConfigured} onClick={() => setAdding(true)}><Plus size={14} />Add account</Btn></div>
+    <div className="workspace-heading"><div><strong>Official gws · Google accounts</strong><p className="muted">Each account has its own name and sign-in. All saved accounts travel with encrypted Sharing.</p></div><div className="manager-actions"><Btn disabled={busy || !accounts.some(a => a.email)} title="Renew each sign-in and check its Google permissions" onClick={() => void act(() => api().checkWorkspace(), 'Google sign-ins checked')}><ShieldCheck size={14} />Check sign-ins</Btn><Btn disabled={busy || !status?.oauthConfigured} onClick={() => setAdding(true)}><Plus size={14} />Add account</Btn></div></div>
     {!status?.oauthConfigured && <p className="muted">Import your Google OAuth project below to enable sign-in.</p>}
     {adding && <form className="workspace-add" onSubmit={e => { e.preventDefault(); connect() }}>
       <Field label="Account name" hint="Used by agents to choose the account, for example work or personal."><input autoFocus value={account} maxLength={48} placeholder="work" onChange={e => { setAccount(e.target.value); setError('') }} autoComplete="off" /></Field>
@@ -26,7 +26,7 @@ export function WorkspaceAccounts({ status, act, busy }: { status?: WorkspaceSta
       {error && <p role="alert" className="workspace-form-error">{error}</p>}
     </form>}
     {accounts.map(a => <div className="workspace-account" key={a.account}>
-      <div><strong>{a.account === 'gmail' ? 'Gmail' : a.account === 'work' ? 'Work' : a.account}</strong><small>{a.email ? `${a.email} · ` : ''}{a.state}{a.detail ? ` · ${a.detail}` : ''}</small><small>Account name: {a.account}</small></div>
+      <div><strong>{a.account === 'gmail' ? 'Gmail' : a.account === 'work' ? 'Work' : a.account}</strong><small className={/^(Needs reconnect|Missing permissions|Sign-in required|Check failed)/.test(a.state) ? 'workspace-account-warn' : undefined}>{a.email ? `${a.email} · ` : ''}{a.state}{a.detail ? ` · ${a.detail}` : ''}</small><small>Account name: {a.account}</small></div>
       <div className="manager-actions"><Btn disabled={busy || !status?.oauthConfigured || a.state === 'Waiting for browser sign-in'} onClick={() => void act(() => api().signInWorkspace(a.account))}>{a.email ? 'Reconnect' : a.state === 'Waiting for browser sign-in' ? 'Waiting for Google…' : 'Sign in'}</Btn>
         {<Btn disabled={busy} aria-label={`Remove ${a.account} sign-in`} onClick={() => void act(() => api().signOutWorkspace(a.account), `${a.account} sign-in removed`)}>{a.state === 'Waiting for browser sign-in' ? 'Cancel' : 'Sign out'}</Btn>}</div>
     </div>)}

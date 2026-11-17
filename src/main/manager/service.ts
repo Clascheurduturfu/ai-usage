@@ -211,7 +211,17 @@ export class ManagerService {
       case 'install:confirm': { const result = await this.installer.install(p); await this.changed(true); return result }
       case 'mcp:preparePreview': return this.preparation.preview(p)
       case 'mcp:prepare': { this.suppressWatchUntil = Date.now() + 600_000; try { const result = await this.preparation.confirm(p); await this.recordSync(await this.sync.sync()); this.notify(); return result } finally { this.suppressWatchUntil = Date.now() + 1500 } }
-      case 'mcp:check': { const spec = (await this.store.mcpRaw())[p]; const result = spec?.url && !spec.command ? await this.auth.check(p) : await this.preparation.probe(p); this.notify(); return result }
+      case 'mcp:check': {
+        const spec = (await this.store.mcpRaw())[p]; const result = spec?.url && !spec.command ? await this.auth.check(p) : await this.preparation.probe(p)
+        // Workspace: the connection check also verifies each Google account's sign-in and permissions.
+        if (p === 'google-workspace' && result.state === 'Connection verified') {
+          const accounts = (await this.workspace.checkAccounts()).filter(a => Object.hasOwn(this.store.config.workspaceAccounts ?? {}, a.account))
+          const bad = accounts.filter(a => a.state !== 'Signed in')
+          result.detail = result.detail.replace('Google consent was not checked.', accounts.length ? `Google accounts: ${accounts.map(a => `${a.account} ${a.state.toLowerCase()}`).join(', ')}.` : 'No Google account is connected yet.')
+          if (bad.length) result.state = 'Needs sign-in'
+        }
+        this.notify(); return result
+      }
       case 'mcp:awsProfile': await this.preparation.setAwsProfile(p.name, p.profile); await this.recordSync(await this.sync.sync()); return
       case 'mcp:localLaunch': await this.preparation.setOverride(p.name, p.launch); await this.recordSync(await this.sync.sync()); this.notify(); return
       case 'mcp:localLaunchGet': return this.preparation.localLaunch(p)
@@ -312,6 +322,7 @@ export class ManagerService {
       }
       case 'workspace:signIn': await this.workspace.signIn(p); return
       case 'workspace:signOut': await this.workspace.signOut(p); return
+      case 'workspace:check': return this.workspace.checkAccounts()
       case 'workspace:finish': await this.workspace.finish(p); return
       case 'workspace:importAccount': { await this.workspace.importAccount(p.account, p.credential, p.projectId); this.notify(); return { account: p.account, saved: true } }
       case 'workspace:enable': {

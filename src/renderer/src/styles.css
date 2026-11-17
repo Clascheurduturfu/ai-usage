@@ -617,3 +617,7 @@ dialog.confirm-dialog::backdrop {
 .sync-apply { align-items: center; flex-wrap: wrap; }
 .sync-apply .muted { font-size: 11px; }
 .sync-row-attention > svg { color: var(--warn); }
+
+/* rc.16: Google account sign-in check */
+.workspace-heading > .manager-actions { flex-shrink: 0; }
+.workspace-account small.workspace-account-warn { color: var(--warn); }

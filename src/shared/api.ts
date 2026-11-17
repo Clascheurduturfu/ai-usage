@@ -66,6 +66,7 @@ export function createApi(
     importWorkspaceClientFile: (file: string) => invoke<void>('workspace:clientFile', file),
     signInWorkspace: (account: string) => invoke<void>('workspace:signIn', account),
     signOutWorkspace: (account: string) => invoke<void>('workspace:signOut', account),
+    checkWorkspace: () => invoke<unknown>('workspace:check'),
     enableWorkspace: () => invoke<{ enabled: boolean }>('workspace:enable'),
     openMcpHelp: (name: string) => invoke<void>('mcp:help', name),
     previewSync: () => invoke<SyncPreview>('manager:preview'),

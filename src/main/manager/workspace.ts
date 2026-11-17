@@ -13,6 +13,32 @@ type Credential = { type: 'authorized_user'; client_id: string; client_secret: s
 type Runner = { command: string; args: string[]; env?: Record<string, string> }
 const scopes = ['https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/contacts.readonly']
 
+const scopeLabels: Record<string, string> = {
+  'https://www.googleapis.com/auth/gmail.modify': 'Gmail (read and organize)', 'https://www.googleapis.com/auth/gmail.send': 'Gmail (send)',
+  'https://www.googleapis.com/auth/calendar': 'Calendar', 'https://www.googleapis.com/auth/drive': 'Drive', 'https://www.googleapis.com/auth/documents': 'Docs',
+  'https://www.googleapis.com/auth/spreadsheets': 'Sheets', 'https://www.googleapis.com/auth/contacts.readonly': 'Contacts'
+}
+const TESTING_HINT = 'If your Google Cloud OAuth app is still in Testing, Google ends its sign-ins after 7 days; publishing the app to Production stops that.'
+/** A failed token refresh, with Google's reason (invalid_grant means the sign-in was revoked or expired). */
+class RefreshError extends Error { constructor(message: string, readonly status: number, readonly reason?: string) { super(message) } }
+
+/** Turn a failed gws run into a message that says what Google refused and what to do. */
+export function describeGwsError(error: unknown, account?: string): string {
+  const e = error as { message?: string; stdout?: string; stderr?: string }
+  const out = String(e?.stdout ?? ''), err = String(e?.stderr ?? '')
+  let api: { code?: number; message?: string; reason?: string; status?: string } | undefined
+  try { api = JSON.parse(out.slice(out.indexOf('{')))?.error } catch { /* not a JSON error */ }
+  const who = account ? `the ${account} account` : 'this account'
+  if (api?.code) {
+    const said = String(api.message ?? api.status ?? 'no details').slice(0, 500)
+    if (api.code === 401) return `Google rejected ${who}'s sign-in (HTTP 401): ${said} Reconnect it in AI Usage → Shared library → MCP → google-workspace.`
+    if (api.code === 403 && /scope|insufficient|permission/i.test(`${said} ${api.reason ?? ''}`)) return `${who.charAt(0).toUpperCase() + who.slice(1)} did not grant the permission this call needs (HTTP 403): ${said} Reconnect it and allow every permission on Google's consent screen.`
+    return `Google refused the request (HTTP ${api.code}${api.reason ? `, ${api.reason}` : ''}): ${said}`
+  }
+  const text = (err.split(/\r?\n/).find(line => /^error/i.test(line.trim())) ?? (err.trim() || out.trim())).trim()
+  return text ? `gws: ${text.slice(0, 1500)}` : `${e?.message ?? 'gws failed'}. gws printed nothing; run the AI Usage connection check for google-workspace.`
+}
+
 /** Official gws 0.22.5 uses the app adapter for MCP and account selection. Keep credentials and selection in AI Usage. */
 export class WorkspaceAdapter {
   private requests = new Map<string, AbortController>()
@@ -92,23 +118,54 @@ export class WorkspaceAdapter {
       this.store.config.workspaceAccounts[account].email = identity.emailAddress; await this.store.save(); this.states[account] = { state: 'Signed in' }; this.notify()
     } catch (error) { this.store.config.workspaceAccounts = oldAccounts; await this.vault.restoreProtected(before); throw error }
   }
-  private async token(account: string): Promise<string> {
+  private async token(account: string, force = false): Promise<string> {
     validateWorkspaceAccount(account)
     if (!Object.hasOwn(this.store.config.workspaceAccounts ?? {}, account)) throw new Error(`Unknown account ${account}. Import its Google credentials in AI Usage first.`)
     const existing = this.refreshing.get(account); if (existing) return existing
-    const operation = this.refresh(account); this.refreshing.set(account, operation)
+    const operation = this.refresh(account, force); this.refreshing.set(account, operation)
     try { return await operation } finally { if (this.refreshing.get(account) === operation) this.refreshing.delete(account) }
   }
-  private async refresh(account: string): Promise<string> {
+  private async refresh(account: string, force = false): Promise<string> {
     const ref = this.store.config.workspaceAccounts![account].secretRef
     const c: Credential = JSON.parse(await this.vault.get(ref))
-    if (c.token && Date.parse(c.expiry ?? '') > Date.now() + 120_000) return c.token
+    if (!force && c.token && Date.parse(c.expiry ?? '') > Date.now() + 120_000) return c.token
     const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ grant_type: 'refresh_token', client_id: c.client_id, client_secret: c.client_secret, refresh_token: c.refresh_token }), signal: AbortSignal.timeout(15_000) })
     const result = await response.json() as any
-    if (!response.ok || typeof result.access_token !== 'string') { this.states[account] = { state: 'Sign-in required', detail: `Google token refresh failed (HTTP ${response.status})` }; this.notify(); throw new Error(`${account}: Google token refresh failed (HTTP ${response.status}). Reconnect this account in AI Usage.`) }
+    if (!response.ok || typeof result.access_token !== 'string') {
+      const reason = typeof result.error === 'string' ? result.error : undefined
+      const why = reason === 'invalid_grant' ? `Google no longer accepts this sign-in (it was revoked or expired). ${TESTING_HINT}` : `Google token refresh failed (HTTP ${response.status}${reason ? `, ${reason}` : ''}).`
+      this.states[account] = { state: 'Needs reconnect', detail: why }; this.notify()
+      throw new RefreshError(`${account}: ${why} Reconnect this account in AI Usage.`, response.status, reason)
+    }
     c.token = result.access_token; c.expiry = new Date(Date.now() + (Number(result.expires_in) || 3600) * 1000).toISOString()
     if (typeof result.refresh_token === 'string') c.refresh_token = result.refresh_token
     await this.vault.set(ref, JSON.stringify(c)); this.states[account] = { state: 'Signed in' }; this.notify(); return c.token!
+  }
+  /**
+   * Verify every saved account: the refresh token is still accepted (a forced refresh), and the
+   * granted permissions cover what the gws tools need. Updates the per-account state the app shows.
+   */
+  async checkAccounts(): Promise<WorkspaceStatus['accounts']> {
+    for (const account of Object.keys(this.store.config.workspaceAccounts ?? {})) {
+      const saved = this.store.config.workspaceAccounts![account]
+      if (!this.vault.refs().includes(saved.secretRef)) continue
+      try {
+        const token = await this.token(account, true)
+        const response = await fetch('https://oauth2.googleapis.com/tokeninfo', { method: 'POST', body: new URLSearchParams({ access_token: token }), signal: AbortSignal.timeout(15_000) })
+        const info = await response.json() as any
+        if (!response.ok) throw new Error(`Google could not describe the renewed token (HTTP ${response.status})`)
+        const granted = new Set(String(info.scope ?? '').split(' ')), missing = scopes.filter(scope => !granted.has(scope))
+        const c: Credential = JSON.parse(await this.vault.get(saved.secretRef))
+        const age = c.signedInAt ? Math.floor((Date.now() - c.signedInAt) / 86_400_000) : undefined
+        const since = age === undefined ? '' : age === 0 ? ' · signed in today' : ` · signed in ${age} day${age === 1 ? '' : 's'} ago`
+        this.states[account] = missing.length
+          ? { state: 'Missing permissions', detail: `Not granted: ${missing.map(s => scopeLabels[s] ?? s).join(', ')}. Calls that need them fail with HTTP 403. Reconnect and allow every permission${since}.` }
+          : { state: 'Signed in', detail: `Checked just now: the sign-in renews and all ${scopes.length} permissions are granted${since}.` }
+      } catch (error) {
+        if (!(error instanceof RefreshError)) this.states[account] = { state: 'Check failed', detail: (error as Error).message.slice(0, 300) }
+      }
+    }
+    this.notify(); return this.status().accounts
   }
   private tools(): any[] {
     const account = { type: 'string', description: 'Required account name from workspace_accounts (for example personal or work). Never infer or switch a global default.' }
@@ -136,7 +193,7 @@ export class WorkspaceAdapter {
     const token = name === 'workspace_call' ? await this.token(input.account) : ''
     const env = { ...process.env, ...runner.env, GOOGLE_WORKSPACE_CLI_TOKEN: token, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: '', GOOGLE_APPLICATION_CREDENTIALS: '', GOOGLE_WORKSPACE_PROJECT_ID: name === 'workspace_call' ? this.store.config.workspaceAccounts?.[input.account]?.projectId ?? '' : '' }
     try { const result = await this.supervisor.run('google-workspace', { command: runner.command, args: [...runner.args, ...args], env: Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string')) }, signal); if (name === 'workspace_call' && input.outputPath) return JSON.stringify({ savedTo: input.outputPath, bytes: (await fs.stat(input.outputPath)).size }); return result.stdout }
-    catch (error) { const e = error as any; const message = String(e.stderr || e.stdout || 'gws failed'); throw new Error((token ? message.split(token).join('[redacted]') : message).replace(/(?:access_token|refresh_token|client_secret)["\s:=]+[^\s",}]+/gi, '[redacted]').slice(0, 3000)) }
+    catch (error) { const message = describeGwsError(error, name === 'workspace_call' ? input.account : undefined); throw new Error((token ? message.split(token).join('[redacted]') : message).replace(/(?:access_token|refresh_token|client_secret)["\s:=]+[^\s",}]+/gi, '[redacted]').slice(0, 3000)) }
   }
   async rpc(message: any): Promise<any> {
     if (!message || message.jsonrpc !== '2.0' || typeof message.method !== 'string') throw new Error('Invalid Workspace MCP message')

@@ -54,14 +54,16 @@ export class NativeSupervisor {
   transport(name: string, spec: LaunchSpec, kind = 'stateful'): NativeTransport { return new NativeTransport(this, name, spec, kind) }
   async run(name: string, spec: LaunchSpec, signal?: AbortSignal): Promise<{ stdout: string }> {
     signal?.throwIfAborted()
-    const transport = this.transport(name, spec, 'stateless'); let stdout = ''
+    const transport = this.transport(name, spec, 'stateless'); let stdout = '', stderr = ''
     const cancel = (): void => { void transport.close().catch(() => undefined) }
     signal?.addEventListener('abort', cancel, { once: true })
     const result = new Promise<{ stdout: string }>((resolve, reject) => {
       const timer = setTimeout(() => { cancel(); reject(new Error('Command timed out')) }, 60_000)
       const fail = (error: Error): void => { clearTimeout(timer); reject(error) }
       transport.onstdout = text => { stdout += text; if (Buffer.byteLength(stdout) > 8 * 1024 * 1024) { cancel(); fail(new Error('Command output exceeds 8 MiB')) } }
-      transport.onexit = code => { clearTimeout(timer); code === 0 ? resolve({ stdout }) : fail(new Error(`${name} exited with status ${code}; reconnect or review its configuration`)) }
+      // Keep what the command said on failure: callers explain errors from it.
+      transport.onstderr = text => { if (stderr.length < 64 * 1024) stderr += text }
+      transport.onexit = code => { clearTimeout(timer); code === 0 ? resolve({ stdout }) : fail(Object.assign(new Error(`${name} exited with status ${code}`), { code, stdout: stdout.slice(0, 64 * 1024), stderr })) }
       transport.onerror = fail
       transport.onclose = () => fail(new Error('Command stopped or disconnected'))
       void transport.start(true).catch(fail)
