@@ -19,6 +19,8 @@ export function createApi(
     openPriceSource: (url: string) => invoke<void>('pricing:source', url),
     getQuota: () => invoke<QuotaSnapshotDTO>('quota:get'),
     refreshQuota: () => invoke<QuotaSnapshotDTO>('quota:refresh'),
+    /** undefined = status only; a string saves that key after OpenRouter accepts it; null removes the saved key. */
+    openRouterKey: (key?: string | null) => invoke<{ saved: boolean; zcode: boolean; label?: string }>('openrouter:key', key),
     fullRescan: () => invoke<ScanStatus>('scan:full'),
     reindex: () => invoke<ScanStatus>('scan:reindex'),
     pickFolder: native.pickFolder,

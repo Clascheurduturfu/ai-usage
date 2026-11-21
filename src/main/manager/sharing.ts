@@ -152,7 +152,9 @@ export class Sharing {
     // MCP OAuth grants rotate on every refresh, so a copied grant breaks whichever
     // device refreshes second. They stay on the device that signed in; only the
     // "connect through AI Usage" setting travels.
-    const refs = new Set([...this.store.config.endpoints.map(e => e.secretRef), ...this.store.config.proxies.map(p => p.clientSecretRef), this.store.config.workspaceOAuth?.secretRef, ...Object.values(this.store.config.workspaceAccounts ?? {}).map(v => v.secretRef)].filter((ref): ref is string => !!ref))
+    const refs = new Set([...this.store.config.endpoints.map(e => e.secretRef), ...this.store.config.proxies.map(p => p.clientSecretRef), this.store.config.workspaceOAuth?.secretRef, ...Object.values(this.store.config.workspaceAccounts ?? {}).map(v => v.secretRef),
+      // The OpenRouter key saved in Settings (spend on the OpenRouter card).
+      ...this.vault.refs().filter(ref => ref === 'openrouter-quota')].filter((ref): ref is string => !!ref))
     // A vault can lose device-scoped credentials over time. Publish survives by
     // omitting them and stripping the dangling references instead of failing.
     const credentials: Record<string, string> = {}, skipped: string[] = []

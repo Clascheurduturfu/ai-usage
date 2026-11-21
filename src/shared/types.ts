@@ -288,8 +288,10 @@ export interface MistralPlanDTO {
   error?: string
 }
 
-/** OpenRouter usage & credits (key read from ZCode's own config). */
+/** OpenRouter usage & credits (key saved in AI Usage, or read from ZCode's own settings). */
 export interface OpenRouterQuotaDTO {
+  /** Where the key came from: saved in AI Usage, or found in ZCode. */
+  keySource?: 'ai-usage' | 'zcode'
   /** key usage today, USD */
   usageDaily: number | null
   usageWeekly: number | null

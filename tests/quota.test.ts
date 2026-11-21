@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync as Database } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   antigravityBinaryCandidates,
   carryOverBuckets,
@@ -12,7 +12,8 @@ import {
   geminiBucketsFromModels,
   resetClientSecretCache
 } from '../src/main/antigravity-quota'
-import { findOpenRouterKey } from '../src/main/openrouter-quota'
+import { fetchOpenRouterQuota, findOpenRouterKey, verifyOpenRouterKey } from '../src/main/openrouter-quota'
+import { claudeCli, fetchClaudeQuota, renewClaudeSignIn, resetClaudeRenewal } from '../src/main/claude-quota'
 import { buildSyncSnapshot } from '../src/main/quota'
 import { readMistralWhoamiCache } from '../src/main/providers/mistral'
 
@@ -98,29 +99,82 @@ describe('Antigravity credential extraction', () => {
 })
 
 describe('OpenRouter key discovery (ZCode config)', () => {
-  it('finds the first sk-or- key and reports its location', () => {
+  it('reads ZCode 2 provider_config.json, preferring the OpenRouter provider', () => {
     const dir = tmp()
-    const cfg = path.join(dir, 'config.json')
-    fs.writeFileSync(
-      cfg,
-      JSON.stringify({
-        provider: {
-          'some-uuid': { provider: 'zai', options: { apiKey: 'other-key' } },
-          'or-uuid': { provider: 'openrouter', options: { apiKey: 'sk-or-v1-abc123' } }
-        }
-      })
-    )
-    const found = findOpenRouterKey(cfg)
-    expect(found?.key).toBe('sk-or-v1-abc123')
-    expect(found?.at).toBe('provider/or-uuid/options/apiKey')
+    fs.writeFileSync(path.join(dir, 'provider_config.json'), JSON.stringify({ schemaVersion: 1, config: { providerConfigRules: { providerRules: [
+      { providerId: 'opencode-zen-chat', providerName: 'OpenCode Zen', config: { access: { type: 'api-key', apiKey: 'oc_sk_other' } } },
+      { providerId: 'proxy', providerName: 'Proxy', config: { access: { type: 'api-key', apiKey: 'sk-or-v1-proxy' } } },
+      { providerId: 'openrouter', templateId: 'openrouter', providerName: 'OpenRouter', config: { access: { type: 'api-key', apiKey: 'sk-or-v1-main' } } }
+    ] } } }))
+    const found = findOpenRouterKey(dir)
+    expect(found?.key).toBe('sk-or-v1-main'); expect(found?.at).toBe('provider_config.json · OpenRouter')
+  })
+
+  it('still reads the older config.json', () => {
+    const dir = tmp()
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ provider: { 'some-uuid': { provider: 'zai', options: { apiKey: 'other-key' } }, 'or-uuid': { provider: 'openrouter', options: { apiKey: 'sk-or-v1-abc123' } } } }))
+    const found = findOpenRouterKey(dir)
+    expect(found?.key).toBe('sk-or-v1-abc123'); expect(found?.at).toBe('config.json · or-uuid')
   })
 
   it('returns null for missing or keyless configs', () => {
-    expect(findOpenRouterKey(path.join(tmp(), 'missing.json'))).toBeNull()
+    expect(findOpenRouterKey(path.join(tmp(), 'missing'))).toBeNull()
     const dir = tmp()
-    const cfg = path.join(dir, 'config.json')
-    fs.writeFileSync(cfg, JSON.stringify({ provider: { a: { options: { apiKey: 'nope' } } } }))
-    expect(findOpenRouterKey(cfg)).toBeNull()
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ provider: { a: { options: { apiKey: 'nope' } } } }))
+    expect(findOpenRouterKey(dir)).toBeNull()
+  })
+})
+
+describe('OpenRouter spend', () => {
+  afterEach(() => vi.unstubAllGlobals())
+  it('uses the key saved in AI Usage, and keeps spend when only the credit balance fails', async () => {
+    const seen: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      seen.push(init.headers.Authorization)
+      if (url.endsWith('/credits')) return new Response('{}', { status: 403 })
+      return new Response(JSON.stringify({ data: { usage_monthly: 4, byok_usage_monthly: 12.5, byok_usage_daily: 1, limit: null, is_free_tier: false } }))
+    }))
+    const or = await fetchOpenRouterQuota(async () => 'sk-or-v1-saved')
+    expect(seen.every(h => h === 'Bearer sk-or-v1-saved')).toBe(true)
+    expect(or.keySource).toBe('ai-usage'); expect(or.error).toBeUndefined(); expect(or.byokUsageMonthly).toBe(12.5); expect(or.totalCredits).toBeNull()
+  })
+  it('explains a refused key instead of a bare status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 401 })))
+    const or = await fetchOpenRouterQuota(async () => 'sk-or-v1-revoked')
+    expect(or.error).toMatch(/refused the key \(HTTP 401\).*Settings → OpenRouter/)
+    await expect(verifyOpenRouterKey('sk-or-v1-revoked')).rejects.toThrow(/refused the key/)
+    await expect(verifyOpenRouterKey('not-a-key')).rejects.toThrow(/start with “sk-or-”/)
+  })
+})
+
+describe('Claude Code sign-in renewal', () => {
+  afterEach(() => { vi.unstubAllGlobals(); resetClaudeRenewal() })
+  const usage = (): Response => new Response(JSON.stringify({ five_hour: { utilization: 20, resets_at: '2026-11-21T20:00:00Z' } }))
+  it('lets Claude Code renew an expired sign-in, then reads the limits', async () => {
+    let token = { accessToken: 'old', expiresAt: Date.now() - 60_000, subscriptionType: 'pro' }
+    const renew = vi.fn(async () => { token = { accessToken: 'new', expiresAt: Date.now() + 8 * 3_600_000, subscriptionType: 'pro' }; return undefined })
+    const fetchMock = vi.fn(async (_url: string, init: { headers: Record<string, string> }) => init.headers.Authorization === 'Bearer new' ? usage() : new Response('', { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await fetchClaudeQuota({ read: async () => token, renew })
+    expect(renew).toHaveBeenCalledOnce(); expect(result.error).toBeUndefined(); expect(result.windows[0].usedPercent).toBe(20)
+  })
+  it('says what to do when the renewal does not help', async () => {
+    const token = { accessToken: 'old', expiresAt: Date.now() - 60_000 }
+    vi.stubGlobal('fetch', vi.fn(async () => usage()))
+    const result = await fetchClaudeQuota({ read: async () => token, renew: async () => 'Claude Code is signed out on this device' })
+    expect(result.error).toMatch(/could not have it renewed: Claude Code is signed out.*Run `claude` once/)
+  })
+  it('runs `claude auth status`, reports a signed-out CLI and waits 10 minutes before trying again', async () => {
+    const run = vi.fn(async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: '' })) as any
+    expect(await renewClaudeSignIn(run, '/bin/claude')).toBe('Claude Code is signed out on this device')
+    expect(run.mock.calls[0][1]).toEqual(['auth', 'status', '--json'])
+    expect(await renewClaudeSignIn(run, '/bin/claude')).toBe('Claude Code is signed out on this device'); expect(run).toHaveBeenCalledOnce()
+  })
+  it('finds the Claude Code copy bundled in Claude Desktop when the CLI is not installed', () => {
+    const home = tmp(), build = path.join(home, 'AppData/Roaming/Claude/claude-code/2.1.330/abc')
+    fs.mkdirSync(build, { recursive: true }); fs.writeFileSync(path.join(build, 'claude.exe'), '')
+    const saved = process.env.PATH; process.env.PATH = ''
+    try { expect(claudeCli(home, 'win32')).toBe(path.join(build, 'claude.exe')) } finally { process.env.PATH = saved }
   })
 })
 

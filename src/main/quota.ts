@@ -430,7 +430,9 @@ async function publishToNtfy(cfg: NtfyPublishSettings, snapshot: Record<string, 
 export function startQuotaService(
   db: DB,
   appVersion: string,
-  onChanged: () => void
+  onChanged: () => void,
+  /** The OpenRouter key saved in AI Usage's vault, if any. */
+  openRouterKey?: () => Promise<string | undefined>
 ): { refresh(): Promise<void>; stop(): void } {
   let timer: NodeJS.Timeout | null = null
   let inFlight: Promise<void> | null = null
@@ -448,7 +450,11 @@ export function startQuotaService(
           if (verified && verified !== storedSecret) kvSet(db, 'antigravity:clientSecret', verified)
           if (agy) kvSet(db, 'quota:antigravity', carryOverBuckets(kvGet<AntigravityQuotaDTO>(db, 'quota:antigravity'), agy))
         }),
-        update(async () => { const or = await fetchOpenRouterQuota(); if (or) kvSet(db, 'quota:openrouter', or) }),
+        update(async () => {
+          // Keep the last good spend when a refresh fails, marked with the new error (same as Claude below).
+          const or = await fetchOpenRouterQuota(openRouterKey), previous = kvGet<OpenRouterQuotaDTO>(db, 'quota:openrouter')
+          kvSet(db, 'quota:openrouter', or.error && or.keySource && previous?.byokUsageMonthly != null && previous.keySource === or.keySource ? { ...previous, error: or.error } : or)
+        }),
         update(async () => {
           // Keep the last good windows when a refresh fails, marked with the new error.
           const claude = await fetchClaudeQuota(), previous = kvGet<ClaudeQuotaDTO>(db, 'quota:claude')

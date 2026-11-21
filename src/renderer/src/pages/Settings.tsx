@@ -68,6 +68,7 @@ function SettingsForm({ initial }: { initial: Settings }): React.ReactElement {
         <Field label="5-hour token limit" hint="Zero disables the estimate"><input type="number" min="0" value={draft.claude5hLimit} onChange={(e) => patch({ claude5hLimit: Number(e.target.value) })} /></Field>
         <Field label="Weekly token limit" hint="Optional; leave empty to hide"><input type="number" min="0" value={draft.claudeWeeklyLimit ?? ''} onChange={(e) => patch({ claudeWeeklyLimit: e.target.value === '' ? null : Number(e.target.value) })} /></Field>
       </div></Panel><Panel className="settings-panel"><h2>OpenRouter monthly allowance</h2><p>Set your BYOK allowance for the month. Spend is fetched from OpenRouter; this limit is configured by you.</p><div className="settings-form"><Field label="Monthly allowance (USD)" hint="Zero disables the allowance card’s balance"><input type="number" min="0" step="0.01" value={draft.openrouterByokMonthlyAllowance} onChange={(e) => patch({ openrouterByokMonthlyAllowance: Number(e.target.value) })} /></Field></div></Panel>
+      <OpenRouterKeyPanel />
     </>}
     {tab === 'Data sources' && <>
       <Panel className="settings-panel"><h2>Local tool folders</h2><p>Leave a folder empty to use its default location. Saving a changed folder updates monitoring and starts a scan.</p>{PROVIDER_IDS.map((id) => <div className="source-editor" key={id}><label htmlFor={`path-${id}`}>{PROVIDER_NAMES[id]}</label><div><input id={`path-${id}`} placeholder="Auto-detected default" value={draft.paths[id] ?? ''} onChange={(e) => patch({ paths: { ...draft.paths, [id]: e.target.value } })} /><Btn disabled={!!busy} onClick={() => void runAction('browse', async () => { const folder = await api().pickFolder(); if (folder) setDraft((d) => ({ ...d, paths: { ...d.paths, [id]: folder } })) })}>Browse</Btn><Btn title="Use default folder" disabled={!draft.paths[id]} onClick={() => patch({ paths: { ...draft.paths, [id]: '' } })}><RotateCcw size={13} /></Btn></div></div>)}</Panel>
@@ -94,4 +95,20 @@ function SettingsForm({ initial }: { initial: Settings }): React.ReactElement {
     </>}
     <div className="save-bar"><span className="flex items-center gap-2">{dirty ? 'Unsaved changes · save before leaving this page' : <><Check size={14} />All changes saved</>}</span><Btn disabled={!dirty || !!busy} onClick={() => setDraft(initial)}>Discard changes</Btn><Btn disabled={!dirty || !!busy} variant="primary" onClick={save}><Save size={14} />{busy === 'save' ? 'Saving…' : 'Save changes'}</Btn></div>
   </div>
+}
+
+/** The OpenRouter key AI Usage uses for spend: saved here (encrypted, checked with OpenRouter first) or found in ZCode. */
+function OpenRouterKeyPanel(): React.ReactElement {
+  const { busy, runAction } = useApp()
+  const [status, setStatus] = useState<{ saved: boolean; zcode: boolean; label?: string } | null>(null)
+  const [key, setKey] = useState('')
+  useEffect(() => { void api().openRouterKey().then(setStatus).catch(() => setStatus(null)) }, [])
+  const save = (): void => { void runAction('openrouter-key', async () => { setStatus(await api().openRouterKey(key.trim())); setKey('') }, 'OpenRouter key saved. Refreshing spend…') }
+  const remove = (): void => { void runAction('openrouter-key', async () => setStatus(await api().openRouterKey(null)), 'Saved OpenRouter key removed.') }
+  const using = status?.saved ? `Using the key saved in AI Usage${status.label ? ` (“${status.label}”)` : ''}.` : status?.zcode ? 'Using the key found in ZCode. Paste one here to use it instead.' : 'No key yet: AI Usage cannot read your spend.'
+  return <Panel className="settings-panel"><h2>OpenRouter key</h2>
+    <p>Used only to read your spend from OpenRouter. It is checked with OpenRouter before it is saved, kept encrypted on this device, and included in encrypted Sharing. {using}</p>
+    <div className="settings-form"><Field label="API key" hint="Starts with sk-or-. Create one at openrouter.ai/settings/keys"><input type="password" autoComplete="off" spellCheck={false} placeholder={status?.saved ? 'Saved · paste a new key to replace it' : 'sk-or-…'} value={key} onChange={(e) => setKey(e.target.value)} /></Field></div>
+    <div className="flex flex-wrap gap-3"><Btn variant="primary" disabled={!!busy || !key.trim()} onClick={save}><ShieldCheck size={14} />Check and save</Btn>{status?.saved && <Btn disabled={!!busy} onClick={remove}><Trash2 size={14} />Remove saved key</Btn>}</div>
+  </Panel>
 }

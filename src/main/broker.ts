@@ -10,6 +10,7 @@ import { getSettings, saveSettings } from './settings'
 import { getAnalytics, getHistory, getOverview, getProviderDetail } from './queries'
 import { priceCatalog } from './pricing'
 import { getQuotaSnapshot, startQuotaService } from './quota'
+import { OPENROUTER_KEY_REF, findOpenRouterKey, verifyOpenRouterKey } from './openrouter-quota'
 import { Scanner } from './scanner'
 import { ManagerService } from './manager/service'
 import { PROVIDER_IDS } from '../shared/types'
@@ -34,9 +35,10 @@ const updater = new Updater({ installed: APP_VERSION, dataDir: userDataPath(), p
   notify: () => event('update:updated'), busy: () => manager.activity(),
   // Packaged Windows app: the broker runs on aiu-node.exe next to the relay it must move aside.
   installDir: process.platform === 'win32' && /^aiu-node/i.test(path.basename(process.execPath)) ? path.dirname(process.execPath) : undefined })
-const quota = offline ? null : startQuotaService(db, APP_VERSION, () => event('data:updated'))
 const pool = process.env.AIU_POOL || path.join(os.homedir(), '.agents')
 const manager = new ManagerService(pool, userDataPath(), process.env.AIU_HOME || os.homedir(), native, () => event('manager:updated'))
+// The OpenRouter key saved in Settings lives in the manager's encrypted vault.
+const savedOpenRouterKey = (): Promise<string | undefined> => ready.then(() => manager.vault.refs().includes(OPENROUTER_KEY_REF) ? manager.vault.get(OPENROUTER_KEY_REF) : undefined)
 let stopping = false
 let managerError: string | undefined
 const ready = manager.start().catch(error => {
@@ -44,6 +46,7 @@ const ready = manager.start().catch(error => {
   manager.log(managerError); event('data:updated')
   send({ event: 'backend:error', data: managerError })
 })
+const quota = offline ? null : startQuotaService(db, APP_VERSION, () => event('data:updated'), savedOpenRouterKey)
 function validateFilter(filter: any): void { if (!filter || ![1, 7, 30, 90].includes(filter.days) || (filter.provider && !PROVIDER_IDS.includes(filter.provider))) throw new Error('Invalid usage filter') }
 async function dispatch(method: string, params: any): Promise<any> {
   switch (method) {
@@ -72,6 +75,13 @@ async function dispatch(method: string, params: any): Promise<any> {
     case 'tray:quotas': {
       const settings = getSettings(db), cards = makeQuotaCards(getQuotaSnapshot(db), settings, getOverview(db, settings, scanner.status())), now = Date.now()
       return settings.pinnedQuotas.map(id => cards.find(card => card.id === id)).filter(card => !!card).map(card => ({ id: card.id, text: trayQuotaLine(card, now) }))
+    }
+    case 'openrouter:key': {
+      await ready
+      if (params === null) await manager.vault.delete(OPENROUTER_KEY_REF)
+      else if (params !== undefined) { const key = String(params).trim(), label = await verifyOpenRouterKey(key); await manager.vault.set(OPENROUTER_KEY_REF, key); void quota?.refresh(); return { saved: true, zcode: !!findOpenRouterKey(), label } }
+      if (params === null) void quota?.refresh()
+      return { saved: manager.vault.refs().includes(OPENROUTER_KEY_REF), zcode: !!findOpenRouterKey() }
     }
     case 'quota:refresh': if (offline) throw new Error('Live quota refresh is disabled in offline mode'); await quota?.refresh(); return getQuotaSnapshot(db)
     case 'scan:full': await scanner.fullScan(); return scanner.status()

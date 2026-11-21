@@ -45,7 +45,9 @@ export function makeQuotaCards(quota: QuotaSnapshotDTO | null, settings: Setting
         : 'Quota limits reported by Antigravity.' },
     { id: 'openrouter', name: QUOTA_NAMES.openrouter, subtitle: 'Monthly BYOK allowance', plan: 'Monthly allowance', windows: validSpend && allowance > 0 ? [{ id: 'allowance', label: 'Monthly allowance', remaining: clamp((allowance - or!.byokUsageMonthly!) / allowance * 100), resetAt: null }] : [],
       fetchedAt: or?.fetchedAt ?? null, error: or?.error, remainingUsd: validSpend ? Math.max(0, allowance - or!.byokUsageMonthly!) : undefined, allowance,
-      detail: allowance <= 0 ? 'Set a monthly allowance in Settings.' : or ? 'Allowance configured by you. Provider spend is fetched live.' : 'Add an OpenRouter key in ZCode, then refresh.' },
+      detail: allowance <= 0 ? 'Set a monthly allowance in Settings.'
+        : !or?.keySource ? 'Paste an OpenRouter key in Settings → OpenRouter, then refresh.'
+        : `Allowance configured by you. Spend is fetched live with the key ${or.keySource === 'ai-usage' ? 'saved in AI Usage' : 'found in ZCode'}.` },
     claudeCard(quota?.claude ?? null, settings, block, overview.scan.lastScanAt || null)
   ]
 }
