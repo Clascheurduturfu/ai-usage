@@ -62,10 +62,11 @@ export interface SyncChange {
   /** For a skill file: the skill folder it belongs to, so the review can group hundreds of files per skill. */ skill?: string
   /** What this sync will write into the file, in plain words (settings and instructions only). */ planned?: string[]
   /** For a conflict: what changed in the file since the last sync, in plain words. */ details?: string[]
+  /** The client that must be closed before this file is written: it saves its settings from memory and would undo the change. */ waitFor?: string
 }
 export interface SyncApplyOptions { overwrite?: string[]; skip?: string[] }
 export interface SyncPreview { id: string; changes: SyncChange[]; warnings: string[]; createdAt: number }
-export interface SyncResult { changed: number; conflicts: string[]; backupId?: string; warnings: string[] }
+export interface SyncResult { changed: number; conflicts: string[]; backupId?: string; warnings: string[]; /** Files left until their client is closed (see SyncChange.waitFor). */ waiting?: string[] }
 export interface MigrationPreview { providers: number; protectedKeys: number; gateways: number; routes: number; profiles: number; sources: string[]; alreadyImported: boolean }
 export interface SharingStatus { folder: string; enabled: boolean; unlocked: boolean; revision?: string; pending: number; error?: string }
 export interface WorkspaceStatus { oauthConfigured: boolean; projectId?: string; accounts: Array<{ account: string; email?: string; state: string; detail?: string }> }

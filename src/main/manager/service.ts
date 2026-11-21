@@ -115,7 +115,23 @@ export class ManagerService {
       this.log(`Sync conflict: ${result.conflicts.join(', ')}`)
       await this.native('notify', `Sync paused for ${result.conflicts.length} files (${result.conflicts.map(f => path.basename(f)).join(', ')}). Review Shared library → Sync. This is a local edit conflict, not an MCP sign-in error.`).catch(() => undefined)
     } else if (!signature && result.changed > 0 && this.store.config.syncNotifications !== false) await this.native('notify', `Agents synced: ${result.changed} configuration files updated.`).catch(() => undefined)
-    this.conflictNotice = signature; this.notify(); return result
+    this.conflictNotice = signature
+    if (result.waiting?.length) this.syncWhenClosed()
+    this.notify(); return result
+  }
+  private closeTimer?: NodeJS.Timeout
+  /** Claude Desktop rewrites its settings from memory: write its file as soon as it is closed. */
+  private syncWhenClosed(): void {
+    if (this.closeTimer) return
+    this.closeTimer = setInterval(() => {
+      const waiting = this.lastSync?.waiting ?? []
+      void (waiting.length ? this.sync.stillOpen(waiting) : Promise.resolve(false)).then(open => {
+        if (open || !this.closeTimer) return
+        clearInterval(this.closeTimer); this.closeTimer = undefined
+        if (waiting.length) void this.dispatch('manager:sync', null).catch(e => this.log(e.message))
+      }).catch(e => this.log(e.message))
+    }, 3000)
+    this.closeTimer.unref()
   }
   private async handle(method: string, p: any): Promise<any> {
     switch (method) {
@@ -367,5 +383,5 @@ export class ManagerService {
       default: throw new Error('Unknown manager operation')
     }
   }
-  async close(): Promise<void> { this.watcher?.close(); if (this.timer) clearTimeout(this.timer); if (this.shareTimer) clearInterval(this.shareTimer); this.workspace.close(); if (this.runtimeTimer) clearInterval(this.runtimeTimer); await this.auth.close(); await this.supervisor.close(); await this.metrics.flush(); await this.queue; await this.proxies.stopAll(); this.sharing.clear(); this.vault.clear() }
+  async close(): Promise<void> { this.watcher?.close(); if (this.timer) clearTimeout(this.timer); if (this.shareTimer) clearInterval(this.shareTimer); this.workspace.close(); if (this.runtimeTimer) clearInterval(this.runtimeTimer); if (this.closeTimer) { clearInterval(this.closeTimer); this.closeTimer = undefined }; await this.auth.close(); await this.supervisor.close(); await this.metrics.flush(); await this.queue; await this.proxies.stopAll(); this.sharing.clear(); this.vault.clear() }
 }

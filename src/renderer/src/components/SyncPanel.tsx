@@ -8,7 +8,7 @@ type Action = (work: () => Promise<unknown>, success?: string) => Promise<void>
 type Decision = 'overwrite' | 'skip'
 type Kind = NonNullable<SyncChange['kind']>
 /** One reviewable line: a settings or instructions file, or every file of one skill across clients. */
-interface Item { key: string; kind: Kind; title: string; clients: string[]; paths: string[]; counts: Record<'add' | 'update' | 'remove', number>; planned?: string[]; details?: string[]; conflict: boolean }
+interface Item { key: string; kind: Kind; title: string; clients: string[]; paths: string[]; counts: Record<'add' | 'update' | 'remove', number>; planned?: string[]; details?: string[]; conflict: boolean; waitFor?: string }
 
 const fileName = (file: string): string => file.split(/[\\/]/).pop() || file
 const plural = (n: number, one: string, many = `${one}s`): string => `${n.toLocaleString()} ${n === 1 ? one : many}`
@@ -20,7 +20,7 @@ function group(changes: SyncChange[]): Item[] {
   for (const c of changes) {
     const kind = kindOf(c), skill = kind === 'skill' ? c.skill ?? fileName(c.path) : undefined
     const key = skill ? `skill:${skill}:${c.conflict}` : `file:${c.path}`
-    const item = items.get(key) ?? { key, kind, title: skill ?? c.target, clients: [], paths: [], counts: { add: 0, update: 0, remove: 0 }, planned: c.planned, details: c.details, conflict: c.conflict }
+    const item = items.get(key) ?? { key, kind, title: skill ?? c.target, clients: [], paths: [], counts: { add: 0, update: 0, remove: 0 }, planned: c.planned, details: c.details, conflict: c.conflict, waitFor: c.waitFor }
     const client = clientOf(c.target)
     if (!item.clients.includes(client)) item.clients.push(client)
     item.paths.push(c.path); item.counts[c.action ?? 'update']++
@@ -60,6 +60,7 @@ function ItemRow({ item, act, decision, decide }: { item: Item; act: Action; dec
       {skill
         ? <p>Skill folder in {item.clients.join(' and ')}{item.counts.remove && !item.counts.add && !item.counts.update ? ' — this skill is no longer in your shared library' : ''}</p>
         : <code title={item.paths[0]}>{item.paths[0]}</code>}
+      {item.waitFor && <p className="sync-wait">Written as soon as you quit {item.waitFor}. While it is open it saves this file from memory and would undo the change.</p>}
       {item.conflict && !!item.details?.length && <Bullets tone="warn" title="Changed outside AI Usage since the last sync" lines={item.details} />}
       {!skill && !!item.planned?.length && <Bullets title={item.conflict ? 'AI Usage would write' : 'This sync will'} lines={item.planned} />}
       {skill && <details className="sync-files"><summary>Show {plural(item.paths.length, 'file')}</summary><ul>{item.paths.slice(0, 200).map(p => <li key={p}><code>{p}</code></li>)}{item.paths.length > 200 && <li>…and {(item.paths.length - 200).toLocaleString()} more</li>}</ul></details>}
@@ -119,8 +120,8 @@ export function SyncPanel({ data, act, busy }: { data: ManagerSnapshot; act: Act
       : <Panel className="sync-status">
           <CheckCircle2 size={20} aria-hidden />
           <div role="status">
-            <h2>{last ? 'Agents are in sync' : 'Nothing synced yet in this session'}</h2>
-            <p>{last ? (last.changed ? `The last sync updated ${plural(last.changed, 'file')}.` : 'The last sync found nothing to change.') : 'Check what a sync would write to each agent before applying it.'}</p>
+            <h2>{last?.waiting?.length ? 'Claude Desktop updates when you quit it' : last ? 'Agents are in sync' : 'Nothing synced yet in this session'}</h2>
+            <p>{last?.waiting?.length ? `Claude Desktop is open, and it saves its settings file from memory, so a change written now would be undone. AI Usage writes it as soon as you fully quit Claude Desktop (${navigator.platform.startsWith('Mac') ? 'Claude → Quit' : 'tray icon → Quit'}); the new MCP list loads the next time you start it.` : last ? (last.changed ? `The last sync updated ${plural(last.changed, 'file')}.` : 'The last sync found nothing to change.') : 'Check what a sync would write to each agent before applying it.'}</p>
             {!preview && <Btn disabled={busy} onClick={() => void review()}>Check for changes</Btn>}
           </div>
         </Panel>}

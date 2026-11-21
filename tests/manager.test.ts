@@ -98,6 +98,30 @@ describe('shared manager writes', () => {
     expect(servers['aws-mcp']).toBeUndefined(); expect(servers.legacy).toBeUndefined()
     expect(servers.custom.command).toBe('own'); expect(servers.lookalike.command).toBe('other-tool')
   })
+  it('waits for Claude Desktop to close, and does not pause when it saves an older copy of its file', async () => {
+    const { engine } = await fixture()
+    const desktop = (await engine.agents()).find(a => a.id === 'claude-desktop')!.configPath
+    await atomicWrite(desktop, JSON.stringify({ mcpServers: {}, preferences: { theme: 'dark' } }))
+    let open = true; engine.clientOpen = async id => id === 'claude-desktop' && open
+    // Open: nothing is written to its file, the other clients sync, and the file is reported as waiting.
+    const first = await engine.preview()
+    expect(first.changes.find(c => c.path === desktop)!.waitFor).toBe('Claude Desktop')
+    const held = await engine.apply(first.id)
+    expect(held.conflicts).toEqual([]); expect(held.waiting).toEqual([desktop]); expect(held.changed).toBeGreaterThan(0)
+    expect(JSON.parse(await fs.readFile(desktop, 'utf8')).mcpServers).toEqual({})
+    expect(await engine.stillOpen(held.waiting!)).toBe(true)
+    // Closed: the file is written.
+    open = false; expect(await engine.stillOpen(held.waiting!)).toBe(false)
+    const written = await engine.sync(); expect(written.conflicts).toEqual([]); expect(written.waiting).toBeUndefined()
+    const doc = JSON.parse(await fs.readFile(desktop, 'utf8')); expect(doc.mcpServers.shared.args).toContain('--relay'); expect(doc.preferences.theme).toBe('dark')
+    // Reopened with a stale copy: it saves back a relay entry AI Usage had removed and drops the new one.
+    const { command, args: [cli] } = doc.mcpServers.shared
+    await atomicWrite(desktop, JSON.stringify({ mcpServers: { gone: { command, args: [cli, '--relay', 'gone'] } }, preferences: { theme: 'light' } }))
+    const stale = (await engine.preview()).changes.find(c => c.path === desktop)!
+    expect(stale.conflict).toBe(false)
+    expect((await engine.sync()).conflicts).toEqual([])
+    const fixed = JSON.parse(await fs.readFile(desktop, 'utf8')); expect(Object.keys(fixed.mcpServers)).toEqual(['shared']); expect(fixed.preferences.theme).toBe('light')
+  })
   it('restores original bytes and refuses to overwrite edits after a sync', async () => {
     const { home, engine } = await fixture(), original = await fs.readFile(path.join(home, '.codex/config.toml'), 'utf8')
     const result = await engine.sync(); expect((await engine.restore(result.backupId!)).conflicts).toEqual([])

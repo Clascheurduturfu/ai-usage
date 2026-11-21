@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { parse as parseJson, modify, applyEdits } from 'jsonc-parser'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { COMPACT_SUFFIX, LAZY_TOOL_AGENTS, type AgentId, type AgentInfo, type AgentProfile, type AntigravityStatus, type SyncApplyOptions, type SyncChange, type SyncPreview, type SyncResult } from '../../shared/manager'
@@ -21,7 +22,7 @@ const instructions: Partial<Record<AgentId, string>> = { claude: '.claude/CLAUDE
 const INSTRUCTIONS_START = '<!-- AI Usage shared instructions -->'
 const INSTRUCTIONS_END = '<!-- /AI Usage shared instructions -->'
 const SKILL_TARGET_ROOTS = ['.claude/skills', '.gemini/config/skills', '.gemini/antigravity-cli/skills'] as const
-type FileChange = { file: string; before: string | null; after: string | null; target: string; encoding?: 'base64'; unmanagedConflict?: boolean; beforeMode?: number; afterMode?: number }
+type FileChange = { file: string; before: string | null; after: string | null; target: string; encoding?: 'base64'; unmanagedConflict?: boolean; beforeMode?: number; afterMode?: number; waitFor?: string }
 type Ledger = { hashes: Record<string, string>; names: string[]; baselines?: Record<string, string> }
 /**
  * An MCP entry that launches AI Usage's own relay (aiu-mcp, or node + manager.mjs with --relay/--workspace).
@@ -34,12 +35,30 @@ export function isAiUsageRelay(spec: any, runtime: { relay?: string; cli?: strin
   const base = (file: string): string => path.posix.basename(file.replace(/\\/g, '/')).toLowerCase()
   return /^aiu-mcp(?:\.exe)?$/.test(base(parts[0])) || parts.slice(0, 2).some(p => (!!runtime.cli && p === runtime.cli) || (!!runtime.relay && p === runtime.relay) || base(p) === 'manager.mjs')
 }
+/**
+ * Whether a client that rewrites its settings file from memory is running. Claude Desktop keeps its
+ * whole claude_desktop_config.json in memory and saves it back every time it stores a preference
+ * (every few seconds while in use), so an MCP change written while it runs is undone moments later.
+ * Seen on 2026-11-18: four removals in a row came back, each time pausing sync as an outside edit.
+ * Windows: Electron holds its `lockfile` open while the app runs. macOS: look the main process up.
+ */
+export async function claudeDesktopOpen(configPath: string): Promise<boolean> {
+  if (process.platform === 'win32') {
+    const handle = await fs.open(path.join(path.dirname(configPath), 'lockfile'), 'r+').catch((e: NodeJS.ErrnoException) => e)
+    if (handle instanceof Error) return handle.code === 'EBUSY'
+    await handle.close(); return false
+  }
+  if (process.platform === 'darwin') return new Promise(resolve => execFile('pgrep', ['-f', '/Claude\\.app/Contents/MacOS/Claude$'], error => resolve(!error)))
+  return false
+}
 const stable = (v: any): string => JSON.stringify(v, (_key, value) => value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.keys(value).sort().map(k => [k, value[k]])) : value)
 async function contents(file: FileChange): Promise<string | null> { if (!file.encoding) return readText(file.file); try { return (await fs.readFile(file.file)).toString('base64') } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e } }
 async function writeChange(file: FileChange, value: string | null, mode?: number): Promise<void> { if (value === null) await fs.rm(file.file, { force: true }); else { await atomicWrite(file.file, file.encoding ? Buffer.from(value, 'base64') : value); if (mode !== undefined) await fs.chmod(file.file, mode) } }
 export class SyncEngine {
   private previews = new Map<string, { dto: SyncPreview; files: FileChange[]; names: string[]; lingering: Map<string, string[]>; unread: string[] }>()
   readonly antigravity: AntigravityClient
+  /** Whether a client that saves its settings from memory is open (replaced in tests). */
+  clientOpen: (agent: AgentId, configPath: string) => Promise<boolean> = (agent, configPath) => agent === 'claude-desktop' ? claudeDesktopOpen(configPath) : Promise.resolve(false)
   constructor(private store: ManagerStore, private home: string) { this.antigravity = new AntigravityClient(home) }
   private async complete(result: SyncResult): Promise<SyncResult> {
     const client = await this.antigravityStatus(!result.warnings.some(w => w.startsWith('Antigravity: cannot parse') || w.startsWith('Antigravity: invalid MCP server map')))
@@ -104,7 +123,7 @@ export class SyncEngine {
     }
     return undefined
   }
-  private async owned(text: string, file: string, managed: Set<string>): Promise<string> {
+  private async owned(text: string, file: string, managed: Set<string>, relays: 'keep' | 'drop' = 'keep'): Promise<string> {
     if (!/\.(json|toml)$/.test(file)) return text
     const doc: any = file.endsWith('.toml') ? parseToml(text) : parseJson(text)
     const skills = new Set((await this.store.skills()).map(s => s.name))
@@ -124,6 +143,9 @@ export class SyncEngine {
       const args = (value as Record<string, any>)?.args
       return [name, Array.isArray(args) && (args.includes('--relay') || args.includes('--workspace')) ? { aiUsageRelay: true } : value]
     }))
+    // Only AI Usage writes relay entries. One that appears or disappears is a client saving an
+    // older copy of the file (Claude Desktop does this from memory), not a person's edit.
+    if (relays === 'drop') mcp = Object.fromEntries(Object.entries(mcp).filter(([, value]) => !(value as any)?.aiUsageRelay))
     const root = path.join(this.store.pool, 'skills') + path.sep
     return stable({ mcp,
       skillOverrides: select(doc.skillOverrides, skills), disabled: (doc.skills?.disabled ?? []).filter((n: string) => skills.has(n)).sort(),
@@ -320,6 +342,8 @@ export class SyncEngine {
         after = after.trimEnd() + '\n'
       }
       await add(agent.configPath, after, agent.name)
+      const pending = files.find(f => f.file === agent.configPath)
+      if (pending && await this.clientOpen(agent.id, agent.configPath)) pending.waitFor = agent.name
       if (agent.id === 'zcode' && profile && !Object.keys(servers).length && names.length) throw new Error('ZCode falls back to the master when its MCP list is empty; an empty MCP profile cannot be enforced')
       if (profileOff.length && agent.skillControl !== 'native') warnings.push(`${agent.name}: this profile's skill exclusions are not enforced; this client reads the whole shared skill folder`)
       if (agent.id === 'claude-desktop' && entries.length < selected.size) warnings.push('Claude Desktop: its settings file only accepts local servers, so remote servers that are not routed through AI Usage were left out. Add those in Claude Desktop under Settings → Connectors, or turn on Connect via AI Usage for them.')
@@ -359,14 +383,14 @@ export class SyncEngine {
         else if (!/\.(json|toml)$/.test(f.file)) details = describeTextEdits(baseline, f.before ?? '')
         else try {
           const was = await this.owned(baseline, f.file, managed), now = await this.owned(f.before ?? '', f.file, managed)
-          conflict = was !== now
+          conflict = was !== now && await this.owned(baseline, f.file, managed, 'drop') !== await this.owned(f.before ?? '', f.file, managed, 'drop')
           if (conflict) details = describeOwnedEdits(was, now)
         } catch { details = ['The file cannot be read as valid settings right now, for example a missing comma or bracket. Open it to check.'] }
       } else if (conflict && f.unmanagedConflict) details = ['This file already existed before AI Usage ever synced it. Syncing replaces its content.']
       else if (conflict && f.encoding) details = ['A file inside a synced skill folder was changed.']
       const summary = f.encoding ? (action === 'remove' ? 'Removes a file of a skill no longer in the shared library' : action === 'add' ? 'Copies a shared skill file' : 'Updates a shared skill file')
         : f.target.endsWith(' instructions') ? 'Writes the shared instructions' : 'Updates AI Usage’s entries; your other settings stay as they are'
-      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, action, kind: f.encoding ? 'skill' as const : f.target.endsWith(' instructions') ? 'instructions' as const : 'settings' as const, skill, planned, details: conflict ? details : undefined, summary }
+      return { target: f.target, path: f.file, beforeHash: hash(f.before ?? ''), afterHash: hash(f.after ?? ''), changed: true, conflict, action, waitFor: f.waitFor, kind: f.encoding ? 'skill' as const : f.target.endsWith(' instructions') ? 'instructions' as const : 'settings' as const, skill, planned, details: conflict ? details : undefined, summary }
     }))
     const dto: SyncPreview = { id: randomUUID(), createdAt: Date.now(), warnings, changes }
     this.previews.clear(); this.previews.set(dto.id, { dto, files, names, lingering, unread }); return dto
@@ -380,14 +404,16 @@ export class SyncEngine {
     const preview = this.previews.get(id)
     if (!preview || Date.now() - preview.dto.createdAt > 600_000) throw new Error('Preview expired; preview again')
     const skip = new Set(options.skip ?? []), overwrite = new Set(options.overwrite ?? [])
-    const files = preview.files.filter(f => !skip.has(f.file))
+    // A client that saves its settings from memory would undo the write: leave its file for when it is closed.
+    const files = preview.files.filter(f => !skip.has(f.file) && !f.waitFor)
+    const waiting = preview.files.filter(f => !skip.has(f.file) && f.waitFor).map(f => f.file)
     const held = preview.dto.changes.filter(c => c.conflict && skip.has(c.path)).map(c => c.path)
     const conflicts = preview.dto.changes.filter(c => c.conflict && !skip.has(c.path) && !overwrite.has(c.path) && !(replaceInstructions && c.target.endsWith(' instructions'))).map(c => c.path)
     for (const file of files) if (await contents(file) !== file.before || (file.beforeMode !== undefined && ((await fs.stat(file.file)).mode & 0o777) !== file.beforeMode)) conflicts.push(file.file)
     if (conflicts.length) return { changed: 0, conflicts: [...new Set(conflicts)], warnings: ['Files changed outside the manager. Review and adopt their current state before retrying.'] }
     // Globally disabled skills leave the shared folder, so clients that scan it stop seeing them.
     preview.dto.warnings.push(...await this.store.placeSkills(this.store.config.disabledSkills ?? []))
-    if (!files.length) { this.previews.delete(id); return this.complete({ changed: 0, conflicts: held, warnings: preview.dto.warnings }) }
+    if (!files.length) { this.previews.delete(id); return this.complete({ changed: 0, conflicts: held, warnings: preview.dto.warnings, ...(waiting.length ? { waiting } : {}) }) }
     const backupId = randomUUID(), backupPath = path.join(this.store.data, 'backups', backupId + '.json')
     await atomicWrite(backupPath, JSON.stringify(files))
     const applied: FileChange[] = []
@@ -402,7 +428,12 @@ export class SyncEngine {
     const written = new Set(files.map(f => f.file)), kept = [...preview.lingering].filter(([file]) => !written.has(file)).flatMap(([, names]) => names)
     ledger.names = [...new Set([...preview.names, ...kept, ...preview.unread])]; await atomicWrite(this.ledgerPath(), JSON.stringify(ledger))
     this.previews.delete(id)
-    return this.complete({ changed: files.length, conflicts: held, backupId, warnings: preview.dto.warnings })
+    return this.complete({ changed: files.length, conflicts: held, backupId, warnings: preview.dto.warnings, ...(waiting.length ? { waiting } : {}) })
+  }
+  /** Whether any client whose file waits (see apply) is still open. */
+  async stillOpen(files: string[]): Promise<boolean> {
+    for (const agent of (await this.agents()).filter(a => files.includes(a.configPath))) if (await this.clientOpen(agent.id, agent.configPath)) return true
+    return false
   }
   async sync(replaceInstructions = false): Promise<SyncResult> {
     if (!replaceInstructions) return this.apply((await this.preview()).id)

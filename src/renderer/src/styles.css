@@ -621,3 +621,6 @@ dialog.confirm-dialog::backdrop {
 /* rc.16: Google account sign-in check */
 .workspace-heading > .manager-actions { flex-shrink: 0; }
 .workspace-account small.workspace-account-warn { color: var(--warn); }
+
+/* rc.18: Claude Desktop file waits until the app is closed */
+.sync-row-text p.sync-wait { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
