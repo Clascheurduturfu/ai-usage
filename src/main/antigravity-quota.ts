@@ -351,14 +351,20 @@ export function geminiWindowsFromHosts(hosts: ModelQuotaEntry[][], now = Date.no
   }))
 }
 
+/** Google retired the separate Gemini 4 Argon allowance (November 2026). Older clients and stored readings may still carry it. */
+const RETIRED_GROUP = /\bargon\b/i
+export const isRetiredBucket = (b: { id: string; group: string; label: string }): boolean => RETIRED_GROUP.test(`${b.group} ${b.label} ${b.id}`)
+
 /**
- * Keep quota groups only the running client reports (Gemini 4 Argon) when Antigravity is closed:
- * the last value seen, marked with when it was seen. Dropped once its reset time passes or after a week.
+ * Keep quota groups only the running client reports when Antigravity is closed: the last value
+ * seen, marked with when it was seen. Dropped once its reset time passes or after a week.
+ * Retired groups are dropped from both readings.
  */
 export function carryOverBuckets(previous: AntigravityQuotaDTO | null | undefined, next: AntigravityQuotaDTO, now = Date.now()): AntigravityQuotaDTO {
+  if (next.buckets.some(isRetiredBucket)) next = { ...next, buckets: next.buckets.filter(b => !isRetiredBucket(b)) }
   if (next.source !== 'google' || !previous?.buckets.length) return next
   const groups = new Set(next.buckets.map(b => b.group.toLowerCase()))
-  const kept = previous.buckets.filter(b => !groups.has(b.group.toLowerCase()) && !/^gemini( pro| flash)?( models)?$/i.test(b.group)).flatMap(b => {
+  const kept = previous.buckets.filter(b => !isRetiredBucket(b) && !groups.has(b.group.toLowerCase()) && !/^gemini( pro| flash)?( models)?$/i.test(b.group)).flatMap(b => {
     const observedAt = b.observedAt ?? previous.fetchedAt
     if ((b.resetTime !== null && b.resetTime <= now) || now - observedAt > 7 * 86_400_000) return []
     return [{ ...b, observedAt }]

@@ -8,6 +8,10 @@ import { zcodeAdapter } from './zcode'
 import { antigravityAdapter } from './antigravity'
 import { copilotAdapter } from './copilot'
 import { mistralAdapter } from './mistral'
+import { cursorAdapter } from './cursor'
+import { kimiAdapter } from './kimi'
+import { deepseekAdapter } from './deepseek'
+import { piAdapter } from './pi'
 
 export const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
   claude: claudeAdapter,
@@ -17,7 +21,11 @@ export const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
   zcode: zcodeAdapter,
   antigravity: antigravityAdapter,
   copilot: copilotAdapter,
-  mistral: mistralAdapter
+  mistral: mistralAdapter,
+  cursor: cursorAdapter,
+  kimi: kimiAdapter,
+  deepseek: deepseekAdapter,
+  pi: piAdapter
 }
 
 export {
@@ -28,5 +36,9 @@ export {
   zcodeAdapter,
   antigravityAdapter,
   copilotAdapter,
-  mistralAdapter
+  mistralAdapter,
+  cursorAdapter,
+  kimiAdapter,
+  deepseekAdapter,
+  piAdapter
 }

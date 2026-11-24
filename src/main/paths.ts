@@ -18,7 +18,11 @@ export function defaultRoots(): Record<ProviderId, string> {
     zcode: path.join(home, '.zcode', 'cli'),
     antigravity: path.join(home, '.gemini', 'antigravity'),
     copilot: path.join(appData, 'Code', 'User', 'globalStorage', 'github.copilot-chat'),
-    mistral: path.join(home, '.vibe')
+    mistral: path.join(home, '.vibe'),
+    cursor: path.join(appData, 'Cursor'),
+    kimi: process.env.KIMI_CODE_HOME?.trim() || path.join(home, '.kimi-code'),
+    deepseek: process.env.DSH_HOME?.trim() || path.join(home, '.dsh'),
+    pi: process.env.PI_CODING_AGENT_SESSION_DIR?.trim() || path.join(process.env.PI_CODING_AGENT_DIR?.trim() || path.join(home, '.pi', 'agent'), 'sessions')
   }
 }
 

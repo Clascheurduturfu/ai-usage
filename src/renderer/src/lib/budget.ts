@@ -3,7 +3,8 @@ import { LAZY_TOOL_AGENTS, type AgentInfo, type ManagerSnapshot, type McpRecord 
 /** Rough model-agnostic estimate: ~4 bytes of JSON or English per token. */
 export const toTokens = (bytes: number): number => Math.round(bytes / 4)
 export const DEFAULT_BUDGET = 30_000
-const INSTRUCTION_AGENTS = new Set(['claude', 'codex', 'gemini', 'antigravity', 'opencode', 'zcode'])
+// Kimi Code and DeepSeek Harness read the shared ~/.agents/AGENTS.md themselves.
+const INSTRUCTION_AGENTS = new Set(['claude', 'codex', 'gemini', 'antigravity', 'opencode', 'zcode', 'mistral', 'pi', 'kimi', 'deepseek'])
 /** Lazy clients still list tool names; budget ~15 tokens per deferred tool. */
 const DEFERRED_PER_TOOL = 15
 

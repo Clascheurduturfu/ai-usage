@@ -3,8 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Settings } from '../../shared/types'
 import { existsDir, existsFile, walkFiles } from '../paths'
-import type { DB, UpsertEvent } from '../db'
-import { JsonlParser, hashLine, parseJson, safeDate, scanJsonlFile } from './jsonl'
+import { deleteFileData, getFileIndex, saveFileIndex, upsertEvents, type DB, type UpsertEvent } from '../db'
+import { JsonlParser, hashLine, n, parseJson, safeDate, scanJsonlFile } from './jsonl'
 import { ProviderAdapter, ScanOutcome } from './types'
 
 export function mistralRoot(settings: Pick<Settings, 'paths'>): string {
@@ -138,6 +138,79 @@ export function createMistralParser(filePath: string, prior: MistralParserState 
   }
 }
 
+/**
+ * Mistral Vibe 3.x (CLI and the Vibe desktop app, which runs the same engine and shares `~/.vibe`)
+ * stores sessions in the unified harness format: `logs/session/unified/<id>/`, with `meta.json`
+ * (cwd, model) and `generations/<n>/projection-state.json`, whose `snapshot.session.tokenUsage`
+ * is the session's running total (input including cached input, output, cached input). Per-call
+ * records exist only in a journal pruned to its last two segments, so AI Usage records how much the
+ * total grew since its last scan, dated when the session last changed. After a reindex the whole
+ * total comes back as one event.
+ */
+const UNIFIED = 'unified'
+type Totals = { input: number; output: number; cached: number; seq: number }
+
+function latestProjection(sessionDir: string): string | null {
+  const generations = path.join(sessionDir, 'generations')
+  try {
+    const current = fs.readFileSync(path.join(sessionDir, 'CURRENT'), 'utf8').match(/\d{6,}/)?.[0]
+    if (current && existsFile(path.join(generations, current, 'projection-state.json'))) return path.join(generations, current, 'projection-state.json')
+  } catch { /* fall back to the newest generation */ }
+  let names: string[] = []
+  try { names = fs.readdirSync(generations).filter(name => /^\d+$/.test(name)).sort().reverse() } catch { return null }
+  for (const name of names) { const file = path.join(generations, name, 'projection-state.json'); if (existsFile(file)) return file }
+  return null
+}
+const when = (v: unknown): number | null => typeof v === 'number' && v > 0 ? (v < 1e12 ? v * 1000 : v) : safeDate(v)
+
+export function readUnifiedSession(sessionDir: string): { id: string; totals: Omit<Totals, 'seq'>; at: number | null; model: string | null; project: string | null; file: string } | null {
+  const file = latestProjection(sessionDir)
+  if (!file) return null
+  const state = parseJson(fs.readFileSync(file, 'utf8')) as { snapshot?: { session?: Record<string, any> } } | null
+  const session = state?.snapshot?.session, usage = session?.tokenUsage
+  if (!session || !usage || typeof usage !== 'object') return null
+  let meta: Record<string, any> | null = null
+  try { meta = JSON.parse(fs.readFileSync(path.join(sessionDir, 'meta.json'), 'utf8')) } catch { /* projection alone is enough */ }
+  const config = meta?.config ?? {}
+  return {
+    id: String(session.id ?? meta?.session_id ?? path.basename(sessionDir)),
+    totals: { input: n(usage.inputTokens), output: n(usage.outputTokens), cached: Math.min(n(usage.cachedInputTokens), n(usage.inputTokens)) },
+    at: when(session.updatedAt) ?? when(meta?.end_time) ?? when(session.createdAt) ?? when(meta?.start_time),
+    model: typeof config.model_name === 'string' ? config.model_name : typeof config.active_model === 'string' ? config.active_model : null,
+    project: meta?.environment?.working_directory ?? meta?.origin_directory ?? null,
+    file
+  }
+}
+
+function scanUnified(sessionsDir: string, db: DB, outcome: ScanOutcome): void {
+  let dirs: string[] = []
+  try { dirs = fs.readdirSync(path.join(sessionsDir, UNIFIED), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => path.join(sessionsDir, UNIFIED, d.name)) } catch { return }
+  for (const dir of dirs) {
+    try {
+      const session = readUnifiedSession(dir)
+      if (!session) continue
+      const key = `${dir.replaceAll(path.sep, '/')}/#tokens`, stat = fs.statSync(session.file), row = getFileIndex(db, key)
+      if (row && row.size === stat.size && row.mtime === Math.trunc(stat.mtimeMs)) continue
+      let prior: Totals = row?.parser_state ? JSON.parse(row.parser_state) : { input: 0, output: 0, cached: 0, seq: 0 }
+      const t = session.totals
+      // A total that went down is a rewritten session: start it over.
+      if (t.input < prior.input || t.output < prior.output || t.cached < prior.cached) { deleteFileData(db, key); prior = { input: 0, output: 0, cached: 0, seq: 0 } }
+      const dIn = t.input - prior.input, dOut = t.output - prior.output, dCached = t.cached - prior.cached
+      let added = 0
+      if (dIn + dOut > 0) {
+        upsertEvents(db, [{
+          id: `mistral:${session.id}:${prior.seq + 1}`, provider: 'mistral', ts: session.at ?? stat.mtimeMs, session_id: session.id, project: session.project, model: session.model,
+          kind: 'tokens', input_tokens: Math.max(0, dIn - dCached), output_tokens: dOut, cache_read_tokens: Math.max(0, dCached), cache_write_tokens: 0, reasoning_tokens: 0,
+          cost_usd: null, source_file: key, meta: JSON.stringify({ granularity: 'session-delta' })
+        }])
+        added = 1
+      }
+      saveFileIndex(db, { path: key, provider: 'mistral', size: stat.size, mtime: Math.trunc(stat.mtimeMs), byte_offset: stat.size, event_count: (row?.event_count ?? 0) + added, parser_state: JSON.stringify({ ...t, seq: prior.seq + added }), added })
+      outcome.filesScanned++; outcome.eventsAdded += added
+    } catch (err) { outcome.errors.push(`mistral: ${path.basename(dir)}: ${(err as Error).message}`) }
+  }
+}
+
 export const mistralAdapter: ProviderAdapter = {
   id: 'mistral',
   watchRoots(settings) {
@@ -146,19 +219,22 @@ export const mistralAdapter: ProviderAdapter = {
   status(settings) {
     const root = mistralRoot(settings)
     const sessionsDir = path.join(root, SESSIONS_SUBDIR)
-    const installed = existsDir(root) && (existsFile(path.join(root, 'config.toml')) || existsDir(sessionsDir))
+    const installed = existsDir(root) && (existsFile(path.join(root, 'config.toml')) || existsDir(sessionsDir) || existsDir(path.join(root, 'logs')))
     return {
       status: installed ? 'ok' : 'no-data',
       path: sessionsDir,
       note: installed
         ? undefined
-        : 'Mistral Vibe CLI is not installed. Install it from docs.mistral.ai (uv tool install mistral-vibe), run `vibe` once, and this page will light up.'
+        : 'Mistral Vibe is not set up on this device. Install the Vibe desktop app or the CLI (docs.mistral.ai), run it once, and this page will light up.'
     }
   },
   scan(settings, db: DB): ScanOutcome {
     const outcome: ScanOutcome = { filesScanned: 0, eventsAdded: 0, errors: [] }
     const sessionsDir = path.join(mistralRoot(settings), SESSIONS_SUBDIR)
-    for (const file of walkFiles(sessionsDir, (p) => p.endsWith('messages.jsonl'))) {
+    scanUnified(sessionsDir, db, outcome)
+    // Sessions from Vibe 2.x: one folder each, messages without token counts.
+    const unified = path.join(sessionsDir, UNIFIED) + path.sep
+    for (const file of walkFiles(sessionsDir, (p) => p.endsWith('messages.jsonl') && !p.startsWith(unified))) {
       try {
         const r = scanJsonlFile(db, 'mistral', file, (prior) =>
           createMistralParser(file, prior as MistralParserState | null)

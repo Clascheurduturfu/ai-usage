@@ -9,6 +9,7 @@ import { carryOverBuckets, fetchAntigravityQuota, verifiedAntigravityClientSecre
 import { fetchOpenRouterQuota } from './openrouter-quota'
 import { fetchClaudeQuota } from './claude-quota'
 import { mistralRoot, readMistralWhoamiCache } from './providers/mistral'
+import { syncCursorUsage } from './providers/cursor'
 import { getSettings } from './settings'
 
 /**
@@ -442,6 +443,8 @@ export function startQuotaService(
       const update = async (work: () => Promise<unknown>): Promise<void> => { try { await work() } finally { onChanged() } }
       await Promise.allSettled([
         update(() => fetchChatGptQuota(db)),
+        // Cursor's token usage lives only in its account export; pulled with the live quotas.
+        update(() => syncCursorUsage(db, getSettings(db))),
         ...(process.platform === 'darwin' ? [] : [update(() => fetchMistralPlan(mistralRoot(getSettings(db)), db))]),
         update(async () => {
           const storedSecret = kvGet<string>(db, 'antigravity:clientSecret')

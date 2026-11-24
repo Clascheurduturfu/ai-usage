@@ -113,13 +113,14 @@ describe('Mistral Vibe parser', () => {
 
   it('reports not-installed when ~/.vibe is absent', () => {
     const { root, dbPath, settings, sessionsDir } = workspace()
-    fs.rmSync(sessionsDir, { recursive: true, force: true })
+    // The desktop app writes ~/.vibe/logs before any session, so only a bare folder counts as not set up.
+    fs.rmSync(path.dirname(sessionsDir), { recursive: true, force: true })
     fs.unlinkSync(path.join(root, 'config.toml'))
     const db = openDb(dbPath)
     try {
       const status = mistralAdapter.status(settings)
       expect(status.status).toBe('no-data')
-      expect(status.note).toContain('not installed')
+      expect(status.note).toContain('not set up')
       expect(mistralAdapter.scan(settings, db).eventsAdded).toBe(0)
     } finally {
       db.close()

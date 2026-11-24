@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -10,15 +11,30 @@ import { renderCodexToml, renderGeminiServers } from './vendor/renderers'
 import { McpPreparation } from './mcp-preparation'
 import { AntigravityClient } from './antigravity-client'
 import { describeOwnedEdits, describeTextEdits } from './sync-diff'
+import { dshOwnedServers, renderDshPatch } from './dsh-patch'
+import { detectSurfaces } from '../surfaces'
 
 const definitions: Array<[AgentId, string, string, AgentInfo['skillControl']]> = [
   ['claude', 'Claude Code', '.claude.json', 'native'], ['claude-desktop', 'Claude Desktop', 'AppData/Roaming/Claude/claude_desktop_config.json', 'none'],
   ['codex', 'Codex', '.codex/config.toml', 'native'], ['gemini', 'Gemini CLI', '.gemini/settings.json', 'native'],
   ['antigravity', 'Antigravity', '.gemini/config/mcp_config.json', 'native'], ['cursor', 'Cursor', '.cursor/mcp.json', 'shared'],
   ['cline', 'Cline', '.cline/data/settings/cline_mcp_settings.json', 'shared'], ['opencode', 'OpenCode', '.config/opencode/opencode.json', 'native'],
-  ['zcode', 'ZCode', '.zcode/cli/config.json', 'shared'], ['copilot', 'Copilot CLI', '.copilot/mcp-config.json', 'shared']
+  ['zcode', 'ZCode', '.zcode/cli/config.json', 'shared'], ['copilot', 'Copilot CLI', '.copilot/mcp-config.json', 'shared'],
+  // CLI and desktop app share these folders: one entry covers both.
+  ['mistral', 'Mistral Vibe', '.vibe/config.toml', 'native'], ['kimi', 'Kimi Code', '.kimi-code/mcp.json', 'shared'],
+  ['deepseek', 'DeepSeek Harness', '.dsh/cordis.patch.yml', 'shared'], ['pi', 'pi', '.pi/agent/mcp.json', 'shared']
 ]
-const instructions: Partial<Record<AgentId, string>> = { claude: '.claude/CLAUDE.md', codex: '.codex/AGENTS.md', gemini: '.gemini/GEMINI.md', opencode: '.config/opencode/AGENTS.md', zcode: '.zcode/AGENTS.md' }
+/** Folders an environment variable can move; the client's files then sit directly in it. */
+const ENV_ROOTS: Partial<Record<AgentId, string>> = { mistral: 'VIBE_HOME', kimi: 'KIMI_CODE_HOME', deepseek: 'DSH_HOME', pi: 'PI_CODING_AGENT_DIR' }
+const NOTES: Partial<Record<AgentId, string>> = {
+  cursor: 'Reads the shared skill folder itself. Cursor has no global instructions file: set User Rules in Cursor. Restart Cursor after sync.',
+  mistral: 'Reads the shared skill folder itself; profile exclusions go to disabled_skills. New sessions pick up changes.',
+  kimi: 'Reads the shared skill folder and the shared AGENTS.md itself. New sessions pick up changes.',
+  deepseek: 'Reads the shared skill folder and the shared AGENTS.md itself. MCP servers go in a marked block of cordis.patch.yml.',
+  pi: 'Reads the shared skill folder itself and reaches MCP tools through its codemode tool. Run /reload in open sessions.'
+}
+// Kimi Code and DeepSeek Harness also read ~/.agents/AGENTS.md, the shared file itself, so they need no copy.
+const instructions: Partial<Record<AgentId, string>> = { claude: '.claude/CLAUDE.md', codex: '.codex/AGENTS.md', gemini: '.gemini/GEMINI.md', opencode: '.config/opencode/AGENTS.md', zcode: '.zcode/AGENTS.md', mistral: '.vibe/AGENTS.md', pi: '.pi/agent/AGENTS.md' }
 const INSTRUCTIONS_START = '<!-- AI Usage shared instructions -->'
 const INSTRUCTIONS_END = '<!-- /AI Usage shared instructions -->'
 const SKILL_TARGET_ROOTS = ['.claude/skills', '.gemini/config/skills', '.gemini/antigravity-cli/skills'] as const
@@ -84,14 +100,21 @@ export class SyncEngine {
     const excluded = names.filter(name => !selected.includes(name)).map(name => off.has(name) ? { name, state: 'Disabled', tools: 0, detail: 'Disabled for every agent in AI Usage → Shared library.' } : { name, state: 'Not selected', tools: 0, detail: 'Excluded by the active Antigravity profile. Use the standard shared profile to include it.' })
     return { ...live, expected: selected.length, libraryCount: names.length, servers: [...servers, ...excluded, ...live.servers.filter(server => !names.includes(server.name))] }
   }
+  /** A client file under its home folder, or directly in the folder its environment variable names (real home only, so tests stay put). */
+  private clientFile(id: AgentId, relative: string): string {
+    const variable = ENV_ROOTS[id], moved = variable && this.home === os.homedir() ? process.env[variable]?.trim() : undefined
+    return moved ? path.join(moved, path.basename(relative)) : path.join(this.home, relative)
+  }
   async agents(): Promise<AgentInfo[]> {
     const supported = definitions
     return Promise.all(supported.map(async ([id, name, relative, skillControl]) => {
-      const configPath = path.join(this.home, process.platform === 'darwin' && id === 'claude-desktop' ? 'Library/Application Support/Claude/claude_desktop_config.json' : relative)
-      const nativeApp = id === 'antigravity' && (await Promise.all((process.platform === 'darwin' ? [...['Antigravity.app', 'Antigravity IDE.app'].flatMap(name => [path.join('/Applications', name), path.join(this.home, 'Applications', name)]), path.join(this.home, '.gemini/antigravity'), path.join(this.home, '.gemini/antigravity-cli')] : [path.join(this.home, 'AppData/Local/Programs/Antigravity'), path.join(this.home, '.gemini/antigravity')]).map(file => fs.access(file).then(() => true, () => false)))).some(Boolean)
-      const installed = !!await readText(configPath) || nativeApp || await fs.access(path.dirname(configPath)).then(() => true, () => false)
-      return { id, name, configPath, installed, skillControl, restartRequired: true, endpointSupport: ['claude', 'codex', 'opencode', 'claude-desktop'].includes(id),
-        note: id === 'antigravity' ? 'Shared skills are copied to the native global skills folder. Restart after sync.' : skillControl === 'shared' ? 'Reads the shared skill library. Individual exclusions are not guaranteed by this client.' : skillControl === 'none' ? 'Skills are managed by the client separately.' : undefined }
+      const configPath = process.platform === 'darwin' && id === 'claude-desktop' ? path.join(this.home, 'Library/Application Support/Claude/claude_desktop_config.json') : this.clientFile(id, relative)
+      // The CLI or desktop app being installed counts too, before either has written its folder.
+      const surfaces = this.home === os.homedir() ? detectSurfaces(id) : []
+      const nativeApp =id === 'antigravity' && (await Promise.all((process.platform === 'darwin' ? [...['Antigravity.app', 'Antigravity IDE.app'].flatMap(name => [path.join('/Applications', name), path.join(this.home, 'Applications', name)]), path.join(this.home, '.gemini/antigravity'), path.join(this.home, '.gemini/antigravity-cli')] : [path.join(this.home, 'AppData/Local/Programs/Antigravity'), path.join(this.home, '.gemini/antigravity')]).map(file => fs.access(file).then(() => true, () => false)))).some(Boolean)
+      const installed = !!await readText(configPath) || nativeApp || surfaces.some(s => s.detected) || await fs.access(path.dirname(configPath)).then(() => true, () => false)
+      return { id, name, configPath, installed, skillControl, restartRequired: true, endpointSupport: ['claude', 'codex', 'opencode', 'claude-desktop'].includes(id), surfaces,
+        note: NOTES[id] ?? (id === 'antigravity' ? 'Shared skills are copied to the native global skills folder. Restart after sync.' : skillControl === 'shared' ? 'Reads the shared skill library. Individual exclusions are not guaranteed by this client.' : skillControl === 'none' ? 'Skills are managed by the client separately.' : undefined) }
     }))
   }
   private async pruneEmptySkillDirs(removedFiles: readonly string[]): Promise<void> {
@@ -124,11 +147,15 @@ export class SyncEngine {
     return undefined
   }
   private async owned(text: string, file: string, managed: Set<string>, relays: 'keep' | 'drop' = 'keep'): Promise<string> {
+    // DeepSeek Harness: only the marked block is AI Usage's; the rest of the YAML patch is the user's.
+    if (/\.ya?ml$/.test(file)) return stable({ mcp: dshOwnedServers(text) })
     if (!/\.(json|toml)$/.test(file)) return text
     const doc: any = file.endsWith('.toml') ? parseToml(text) : parseJson(text)
     const skills = new Set((await this.store.skills()).map(s => s.name))
     const select = (v: any, keys: Set<string>): any => Object.fromEntries(Object.entries(v ?? {}).filter(([k]) => keys.has(k)))
-    let mcp = select(doc.mcp_servers ?? doc.mcp?.servers ?? doc.mcp ?? doc.mcpServers, managed)
+    // Mistral Vibe lists servers as an array of tables keyed by `name`.
+    const servers = Array.isArray(doc.mcp_servers) ? Object.fromEntries(doc.mcp_servers.filter((e: any) => typeof e?.name === 'string').map(({ name, ...rest }: any) => [name, rest])) : doc.mcp_servers
+    let mcp = select(servers ?? doc.mcp?.servers ?? doc.mcp ?? doc.mcpServers, managed)
     if (file === path.join(this.home, '.gemini/config/mcp_config.json')) mcp = Object.fromEntries(Object.entries(mcp).map(([name, value]) => {
       // Antigravity drops empty argument lists and owns its UI enable/disable toggle.
       // Preserve that toggle without treating its normalization as a launch edit.
@@ -148,7 +175,7 @@ export class SyncEngine {
     if (relays === 'drop') mcp = Object.fromEntries(Object.entries(mcp).filter(([, value]) => !(value as any)?.aiUsageRelay))
     const root = path.join(this.store.pool, 'skills') + path.sep
     return stable({ mcp,
-      skillOverrides: select(doc.skillOverrides, skills), disabled: (doc.skills?.disabled ?? []).filter((n: string) => skills.has(n)).sort(),
+      skillOverrides: select(doc.skillOverrides, skills), disabled: [...(doc.skills?.disabled ?? []), ...(Array.isArray(doc.disabled_skills) ? doc.disabled_skills : [])].filter((n: string) => skills.has(n)).sort(),
       skillConfig: (doc.skills?.config ?? []).filter((v: any) => String(v.path ?? '').startsWith(root)), permission: select(doc.permission?.skill, skills) })
   }
   private async materializeSkills(disabled: string[], ledger: Ledger, files: FileChange[], warnings: string[], relative = '.gemini/config/skills', client = 'Antigravity'): Promise<void> {
@@ -282,13 +309,23 @@ export class SyncEngine {
       const compactFor = (name: string, s: any): any => compactMcp.has(name) && !LAZY_TOOL_AGENTS.includes(agent.id) && Array.isArray(s.args) && s.args.includes('--relay') ? { ...s, args: s.args.map((a: string) => a === name ? name + COMPACT_SUFFIX : a) } : s
       const entries = Object.entries(master).filter(([n, s]) => selected.has(n) && (agent.id !== 'claude-desktop' || s.command)).map(([n, s]) => [n, compactFor(n, s)] as [string, any])
       const text = (await readText(agent.configPath))?.replace(/^\uFEFF/, '') ?? null
+      if (agent.id === 'deepseek') {
+        // A YAML patch layered on every DeepSeek Harness profile: AI Usage rewrites only its marked block.
+        const after = renderDshPatch(text, entries, warnings)
+        if (after !== null && after !== text) await add(agent.configPath, after, agent.name)
+        if (profileOff.length) warnings.push(`${agent.name}: this profile's skill exclusions are not enforced; this client reads the whole shared skill folder`)
+        continue
+      }
+      const toml = agent.id === 'codex' || agent.id === 'mistral'
       const errors: import('jsonc-parser').ParseError[] = []
       let doc: any
-      try { doc = agent.id === 'codex' ? parseToml(text ?? '') : parseJson(text ?? '{}', errors, { allowTrailingComma: true }) }
+      try { doc = toml ? parseToml(text ?? '') : parseJson(text ?? '{}', errors, { allowTrailingComma: true }) }
       catch { errors.push({ error: 1, offset: 0, length: 0 }) }
       if (errors.length || !doc || typeof doc !== 'object' || Array.isArray(doc)) { unread.push(...ledger.names); warnings.push(`${agent.name}: cannot parse ${agent.configPath}; kept this client's files unchanged`); continue }
-      const section = agent.id === 'codex' ? 'mcp_servers' : agent.id === 'opencode' ? 'mcp' : 'mcpServers'
-      const old = agent.id === 'zcode' ? doc.mcp?.servers ?? {} : doc[section] ?? {}
+      const section = toml ? 'mcp_servers' : agent.id === 'opencode' ? 'mcp' : 'mcpServers'
+      // Mistral Vibe: [[mcp_servers]] is an array of tables keyed by `name`.
+      const vibeList: any[] | null | undefined = agent.id !== 'mistral' ? undefined : doc.mcp_servers === undefined ? [] : Array.isArray(doc.mcp_servers) ? doc.mcp_servers : null
+      const old = agent.id === 'zcode' ? doc.mcp?.servers ?? {} : vibeList ? Object.fromEntries(vibeList.filter(e => typeof e?.name === 'string').map(e => [e.name, e])) : vibeList === null ? null : doc[section] ?? {}
       if (!old || typeof old !== 'object' || Array.isArray(old)) { unread.push(...ledger.names); warnings.push(`${agent.name}: invalid MCP server map in ${agent.configPath}; kept it unchanged`); continue }
       // Relay entries are AI Usage's even when an older sync lost track of their name.
       for (const [n, spec] of Object.entries(old)) if (!managed.has(n) && isAiUsageRelay(spec, runtime)) managed.add(n)
@@ -308,6 +345,10 @@ export class SyncEngine {
         }
         else if (agent.id === 'cline') servers[name] = { ...base, ...(local ? {} : { type: 'streamableHttp' }), disabled: false, autoApprove: old[name]?.autoApprove ?? [] }
         else if (agent.id === 'copilot') servers[name] = { type: local ? 'local' : 'http', ...base, tools: old[name]?.tools ?? ['*'] }
+        // Vibe splits a command string like a shell would; a one-item list keeps a path with spaces whole.
+        else if (agent.id === 'mistral') servers[name] = { name, ...(local ? { transport: 'stdio', command: [s.command], args: s.args ?? [], ...(s.env ? { env: s.env } : {}) } : { transport: 'streamable-http', url: s.url, ...(s.headers ? { auth: { type: 'static', headers: s.headers } } : {}) }), ...(old[name]?.disabled_tools ? { disabled_tools: old[name].disabled_tools } : {}) }
+        else if (agent.id === 'cursor') servers[name] = local ? { type: 'stdio', ...base } : base
+        else if (agent.id === 'pi') servers[name] = { ...base, ...(old[name]?.exposure ? { exposure: old[name].exposure } : {}) }
         else servers[name] = { ...base, ...(agent.id === 'claude' && !local ? { type: 'http' } : {}) }
       }
       // ZCode's empty-list fallback reads the raw master. Explicit disabled entries
@@ -331,6 +372,16 @@ export class SyncEngine {
           doc.skills.config = [...(doc.skills.config ?? []).filter((s: any) => !String(s.path ?? '').startsWith(root)), ...profileOff.map(name => ({ path: path.join(root, name, 'SKILL.md'), enabled: false }))]
         }
         after = stringifyToml(doc) + '\n'
+      } else if (agent.id === 'mistral') {
+        doc.mcp_servers = [...(vibeList ?? []).filter(e => typeof e?.name !== 'string' || !managed.has(e.name)), ...entries.map(([name]) => servers[name])]
+        if (!doc.mcp_servers.length) delete doc.mcp_servers
+        if (profile || skillsOff.length || doc.disabled_skills) {
+          const shared = new Set((await this.store.skills()).map(s => s.name)), off = [...(Array.isArray(doc.disabled_skills) ? doc.disabled_skills : []).filter((name: string) => !shared.has(name)), ...skillsOff]
+          if (off.length) doc.disabled_skills = off; else delete doc.disabled_skills
+        }
+        // Nothing to write and no file yet: do not create an empty settings file.
+        if (text === null && !doc.mcp_servers && !doc.disabled_skills) continue
+        after = stringifyToml(doc) + '\n'
       } else {
         after = applyEdits(text ?? '{}', modify(text ?? '{}', agent.id === 'zcode' ? ['mcp', 'servers'] : [section], servers, { formattingOptions: { insertSpaces: true, tabSize: 2 } }))
         if (agent.id === 'gemini' && (profile || skillsOff.length || doc.skills?.disabled)) { const shared = new Set((await this.store.skills()).map(s => s.name)); after = applyEdits(after, modify(after, ['skills', 'disabled'], [...(doc.skills?.disabled ?? []).filter((name: string) => !shared.has(name)), ...skillsOff], { formattingOptions: { insertSpaces: true, tabSize: 2 } })) }
@@ -352,7 +403,8 @@ export class SyncEngine {
         const include = wantFor('gemini') || (agyInstructionTarget === geminiInstructionTarget && wantFor('antigravity'))
         await this.syncMarkedInstructions(geminiInstructionTarget, include, `${agent.name} instructions`, files, warnings)
       } else if (relative && (!profile || profile.instructions)) {
-        const source = path.join(this.store.pool, 'AGENTS.md'), target = path.join(this.home, relative)
+        const source = path.join(this.store.pool, 'AGENTS.md'), target = this.clientFile(agent.id, relative)
+        if (agent.id === 'pi' && await readText(path.join(path.dirname(target), 'AGENTS.override.md')) !== null) warnings.push('pi: AGENTS.override.md in its agent folder takes the place of AGENTS.md, so pi will not see the shared instructions')
         const realTarget = await fs.realpath(target).catch(() => target), realSource = await fs.realpath(source).catch(() => source)
         const sourceText = await readText(source)
         if (sourceText === null) { warnings.push(`${agent.name}: no shared AGENTS.md exists yet; existing instructions were kept`) }
@@ -371,7 +423,7 @@ export class SyncEngine {
       if (!f.encoding && f.after !== null) {
         const toml = f.file.endsWith('.toml')
         try {
-          planned = !/\.(json|toml)$/.test(f.file) ? describeTextEdits(f.before ?? '', f.after, 'plan')
+          planned = !/\.(json|toml|ya?ml)$/.test(f.file) ? describeTextEdits(f.before ?? '', f.after, 'plan')
             : describeOwnedEdits(await this.owned(f.before ?? (toml ? '' : '{}'), f.file, managed), await this.owned(f.after, f.file, managed), 'plan')
         } catch { planned = undefined }
         if (planned && !planned.length) planned = ['Only formatting of AI Usage’s own entries changes; nothing you would notice']
@@ -380,7 +432,7 @@ export class SyncEngine {
       if (conflict && !f.encoding && !f.unmanagedConflict) {
         const baseline = await this.baseline(f.file, ledger)
         if (baseline === undefined) details = ['AI Usage has no copy of what it last wrote here, so it cannot show the exact edit.']
-        else if (!/\.(json|toml)$/.test(f.file)) details = describeTextEdits(baseline, f.before ?? '')
+        else if (!/\.(json|toml|ya?ml)$/.test(f.file)) details = describeTextEdits(baseline, f.before ?? '')
         else try {
           const was = await this.owned(baseline, f.file, managed), now = await this.owned(f.before ?? '', f.file, managed)
           conflict = was !== now && await this.owned(baseline, f.file, managed, 'drop') !== await this.owned(f.before ?? '', f.file, managed, 'drop')

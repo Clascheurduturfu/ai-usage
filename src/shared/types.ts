@@ -9,6 +9,10 @@ export type ProviderId =
   | 'antigravity'
   | 'copilot'
   | 'mistral'
+  | 'cursor'
+  | 'kimi'
+  | 'deepseek'
+  | 'pi'
 
 export const PROVIDER_IDS: ProviderId[] = [
   'claude',
@@ -18,7 +22,11 @@ export const PROVIDER_IDS: ProviderId[] = [
   'zcode',
   'antigravity',
   'copilot',
-  'mistral'
+  'mistral',
+  'cursor',
+  'kimi',
+  'deepseek',
+  'pi'
 ]
 
 export const PROVIDER_NAMES: Record<ProviderId, string> = {
@@ -29,7 +37,11 @@ export const PROVIDER_NAMES: Record<ProviderId, string> = {
   zcode: 'ZCode',
   antigravity: 'Antigravity',
   copilot: 'GitHub Copilot',
-  mistral: 'Mistral Vibe'
+  mistral: 'Mistral Vibe',
+  cursor: 'Cursor',
+  kimi: 'Kimi Code',
+  deepseek: 'DeepSeek Harness',
+  pi: 'pi'
 }
 
 export interface ModelPrice {
@@ -131,6 +143,8 @@ export interface ProviderSummary {
   sessions30d: number
   firstSeen: number | null
   note?: string
+  /** The harness's CLI, desktop app and editor parts, and which of them this device has. */
+  surfaces?: import('./harnesses').SurfaceState[]
 }
 
 export interface SeriesPoint {

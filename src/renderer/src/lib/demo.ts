@@ -5,6 +5,8 @@ import type { UpdateStatus } from '../../../shared/update'
 import type { OverviewDTO, ProviderDetailDTO, QuotaSnapshotDTO, SessionRow, Settings, UsageFilter } from '../../../shared/types'
 import { PROVIDER_IDS, PROVIDER_NAMES } from '../../../shared/types'
 import { demoManagerApi } from './demo-manager'
+import { SURFACE_LABELS, type SurfaceKind, type SurfaceState } from '../../../shared/harnesses'
+import type { ProviderId } from '../../../shared/types'
 const now = Date.now()
 const scenario = new URLSearchParams(location.search).get('demo')
 const empty = scenario === 'empty'
@@ -43,13 +45,20 @@ function series(filter: UsageFilter) {
       tokens: Object.fromEntries(PROVIDER_IDS.map((id) => [id, daily.filter((s) => s.provider === id).reduce((sum, s) => sum + s.tokens, 0)])) }
   })
 }
+const part = (kind: SurfaceKind, detected: boolean, label?: string): SurfaceState => ({ kind, detected, label: label ?? SURFACE_LABELS[kind] })
+const DEMO_SURFACES: Partial<Record<ProviderId, SurfaceState[]>> = {
+  claude: [part('cli', true), part('desktop', true, 'Claude Desktop · Code')], codex: [part('cli', true), part('desktop', true)], antigravity: [part('desktop', true), part('cli', false)],
+  opencode: [part('cli', true), part('desktop', false)], zcode: [part('desktop', true), part('cli', true)], mistral: [part('cli', false), part('desktop', true)],
+  cursor: [part('editor', false, 'Cursor editor'), part('cli', false)], kimi: [part('cli', true), part('desktop', false), part('editor', false, 'VS Code extension')],
+  deepseek: [part('cli', false), part('desktop', true)], pi: [part('cli', true)], gemini: [part('cli', true)], copilot: [part('editor', true, 'VS Code · Copilot Chat'), part('cli', false)]
+}
 function overview(): OverviewDTO {
   const today = selected({ days: 1 })
   return { providers: PROVIDER_IDS.map((id) => {
     const rows = sessions.filter((s) => s.provider === id), daily = today.filter((s) => s.provider === id)
     return { id, name: PROVIDER_NAMES[id], status: rows.length ? 'ok' : 'no-data', dataPath: `C:/Sample-data/${id}`, eventCount: rows.length * 40,
       lastActivity: rows[0]?.lastAt ?? null, firstSeen: rows.at(-1)?.lastAt ?? null, tokensToday: daily.reduce((n, s) => n + s.tokens, 0), costToday: daily.reduce((n, s) => n + s.cost, 0), requestsToday: daily.reduce((n, s) => n + s.requests, 0), unpricedToday: false,
-      tokens30d: rows.reduce((n, s) => n + s.tokens, 0), cost30d: rows.reduce((n, s) => n + s.cost, 0), requests30d: rows.reduce((n, s) => n + s.requests, 0), unpriced30d: false, sessions30d: rows.length }
+      tokens30d: rows.reduce((n, s) => n + s.tokens, 0), cost30d: rows.reduce((n, s) => n + s.cost, 0), requests30d: rows.reduce((n, s) => n + s.requests, 0), unpriced30d: false, sessions30d: rows.length, surfaces: DEMO_SURFACES[id] }
   }), today: { tokens: today.reduce((n, s) => n + s.tokens, 0), cost: today.reduce((n, s) => n + s.cost, 0), requests: today.reduce((n, s) => n + s.requests, 0), unpriced: false },
     series30d: series({ days: 30 }), claude: { activeBlock: null, blocks: [], weeklyTokens: 0 }, codex: null, recentSessions: sessions.slice(0, 12),
     scan: { lastScanAt: now, scanning: false, filesScanned: 302, eventsIndexed: 1280, errors: [] } }

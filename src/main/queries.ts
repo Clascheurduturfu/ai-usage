@@ -17,6 +17,7 @@ import type { HistoryDTO, HistoryFilter, UsageFilter } from '../shared/types'
 import { computeBlocks, BlockEvent } from './blocks'
 import { DB } from './db'
 import { ADAPTERS } from './providers'
+import { detectSurfaces } from './surfaces'
 import { estimateCost, priceFor, type TokenMix } from './pricing'
 import type { ScannerStatusSnapshot } from './scanner'
 
@@ -249,7 +250,8 @@ function providerSummary(db: DB, id: ProviderId, settings: Settings, now: number
     unpriced30d: m30.unpriced,
     sessions30d,
     firstSeen: counts.first_ts ?? null,
-    note: st.note
+    note: st.note,
+    surfaces: detectSurfaces(id)
   }
 }
 
@@ -410,8 +412,24 @@ const PROVIDER_NOTES: Record<ProviderId, string[]> = {
     'Copilot premium-request balances live on GitHub and are not readable from local data.'
   ],
   mistral: [
-    'Activity comes from Mistral Vibe’s local session logs (~/.vibe/logs/session).',
-    'Plan info (when an API key is configured) is fetched read-only from Mistral’s /api/vibe/whoami.'
+    'Tokens come from Mistral Vibe’s session totals (~/.vibe/logs/session), shared by the CLI and the Vibe desktop app. Vibe keeps a running total per session, so each scan records how much it grew.',
+    'Vibe logs no cost; costs are estimates where the model has a price. Plan info (when an API key is configured) comes read-only from Mistral’s /api/vibe/whoami.'
+  ],
+  cursor: [
+    'Tokens come from your Cursor account’s usage export, read with the editor’s own sign-in during the quota refresh. Cursor keeps no usable token counts on disk.',
+    'Cost is Cursor’s billed amount when it shows one; requests included in your plan are estimated.'
+  ],
+  kimi: [
+    'Tokens come from Kimi Code’s session logs (~/.kimi-code/sessions), shared by the CLI, the desktop app and the VS Code extension: one record per model request.',
+    'Kimi Code logs no cost; costs are estimates from the price catalog.'
+  ],
+  deepseek: [
+    'Tokens come from DeepSeek Harness’s session logs (~/.dsh/sessions), shared by the dsh CLI and the desktop app: one record per model call.',
+    'DeepSeek Harness logs no cost; costs are estimates from the price catalog.'
+  ],
+  pi: [
+    'Tokens and cost come from pi’s session files (~/.pi/agent/sessions): one record per model call, with the cost pi computed.',
+    'Local models (for example through Ollama) have no price and show as unpriced.'
   ]
 }
 

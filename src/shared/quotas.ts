@@ -41,7 +41,7 @@ export function makeQuotaCards(quota: QuotaSnapshotDTO | null, settings: Setting
       windows: (ag?.buckets ?? []).filter((b) => Number.isFinite(b.remainingFraction)).map((b) => ({ id: b.id, label: (b.window ? `${b.group} · ${b.window === '5h' ? '5 hours' : b.window === 'weekly' ? 'Weekly' : b.window}` : b.label || b.group) + (b.observedAt ? ` · as of ${ago(b.observedAt)}` : ''), remaining: clamp(b.remainingFraction * 100), resetAt: b.resetTime })),
       fetchedAt: ag?.fetchedAt ?? null, error: ag?.error, detail: ag?.availablePromptCredits != null ? `${ag.availablePromptCredits.toLocaleString()} prompt credits available`
         : !ag?.buckets.length ? 'Sign in to Antigravity to connect your plan.'
-        : ag.source === 'google' ? `Antigravity is closed, so these limits come from Google directly.${ag.buckets.some(b => b.observedAt) ? ' Limits only Antigravity reports show their last value.' : ' Open Antigravity once to also see the limits only it reports, such as Gemini 4 Argon.'}`
+        : ag.source === 'google' ? `Antigravity is closed, so these limits come from Google directly.${ag.buckets.some(b => b.observedAt) ? ' Limits only Antigravity reports show their last value.' : ''}`
         : 'Quota limits reported by Antigravity.' },
     { id: 'openrouter', name: QUOTA_NAMES.openrouter, subtitle: 'Monthly BYOK allowance', plan: 'Monthly allowance', windows: validSpend && allowance > 0 ? [{ id: 'allowance', label: 'Monthly allowance', remaining: clamp((allowance - or!.byokUsageMonthly!) / allowance * 100), resetAt: null }] : [],
       fetchedAt: or?.fetchedAt ?? null, error: or?.error, remainingUsd: validSpend ? Math.max(0, allowance - or!.byokUsageMonthly!) : undefined, allowance,

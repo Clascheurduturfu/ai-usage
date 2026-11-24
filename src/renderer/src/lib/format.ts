@@ -98,11 +98,15 @@ export const PROVIDER_COLORS: Record<ProviderId, string> = {
   zcode: '#a78bfa',
   antigravity: '#7c9eff',
   copilot: '#9aa7c7',
-  mistral: '#ff7000'
+  mistral: '#ff7000',
+  cursor: '#a1a1aa',
+  kimi: '#4f8cff',
+  deepseek: '#4d6bfe',
+  pi: '#f2c14e'
 }
 
 /** Providers that record activity (requests) instead of token counts. */
-export const REQUEST_KIND_PROVIDERS: ProviderId[] = ['gemini', 'copilot', 'mistral']
+export const REQUEST_KIND_PROVIDERS: ProviderId[] = ['gemini', 'copilot']
 
 export function isRequestKind(id: ProviderId): boolean {
   return REQUEST_KIND_PROVIDERS.includes(id)

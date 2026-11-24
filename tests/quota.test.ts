@@ -170,6 +170,18 @@ describe('Claude Code sign-in renewal', () => {
     expect(run.mock.calls[0][1]).toEqual(['auth', 'status', '--json'])
     expect(await renewClaudeSignIn(run, '/bin/claude')).toBe('Claude Code is signed out on this device'); expect(run).toHaveBeenCalledOnce()
   })
+  it('on macOS, starts Claude Code in a hidden terminal when `auth status` left the sign-in expired', async () => {
+    const run = vi.fn(async () => ({ stdout: JSON.stringify({ loggedIn: true }), stderr: '' })) as any
+    const stale = async () => ({ accessToken: 'old', expiresAt: Date.now() - 60_000 })
+    const start = vi.fn(async () => true)
+    expect(await renewClaudeSignIn(run, '/bin/claude', stale, 'darwin', start)).toBeUndefined()
+    expect(start).toHaveBeenCalledWith('/bin/claude', stale)
+    resetClaudeRenewal()
+    expect(await renewClaudeSignIn(run, '/bin/claude', stale, 'darwin', async () => false)).toMatch(/did not renew/)
+    resetClaudeRenewal()
+    const never = vi.fn(async () => true)
+    await renewClaudeSignIn(run, '/bin/claude', stale, 'win32', never); expect(never).not.toHaveBeenCalled()
+  })
   it('finds the Claude Code copy bundled in Claude Desktop when the CLI is not installed', () => {
     const home = tmp(), build = path.join(home, 'AppData/Roaming/Claude/claude-code/2.1.330/abc')
     fs.mkdirSync(build, { recursive: true }); fs.writeFileSync(path.join(build, 'claude.exe'), '')
@@ -286,19 +298,27 @@ describe('Gemini limits while Antigravity is closed', () => {
     expect(geminiWindowsFromHosts([[{ modelId: 'claude-opus-5-5-high', remainingFraction: 1, resetTime: '2026-11-17T19:00:00Z' }]], now)).toEqual([])
   })
 
-  it('keeps the last Argon value from Antigravity, with when it was seen, until it resets', () => {
-    const argon = { id: 'gemini-argon-wtu-weekly', group: 'Gemini 4 Argon', label: 'Gemini 4 Argon Weekly Limit', window: 'weekly', remainingFraction: 0.33, resetTime: Date.parse('2026-11-21T13:13:28Z'), description: null }
-    const local = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'antigravity' as const, fetchedAt: now - 3 * 3_600_000, buckets: [{ ...argon, id: 'gemini-weekly', group: 'Gemini Models', label: 'Weekly Limit Remaining', remainingFraction: 0.5 }, argon] }
+  it('keeps the last value of a limit only Antigravity reports, with when it was seen, until it resets', () => {
+    const only = { id: 'client-only-weekly', group: 'Client-only limit', label: 'Client-only Weekly Limit', window: 'weekly', remainingFraction: 0.33, resetTime: Date.parse('2026-11-21T13:13:28Z'), description: null }
+    const local = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'antigravity' as const, fetchedAt: now - 3 * 3_600_000, buckets: [{ ...only, id: 'gemini-weekly', group: 'Gemini Models', label: 'Weekly Limit Remaining', remainingFraction: 0.5 }, only] }
     const closed = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'google' as const, fetchedAt: now, buckets: geminiWindowsFromHosts([weekly, fiveHour], now) }
     const merged = carryOverBuckets(local, closed, now)
-    expect(merged.buckets.map(b => b.id)).toEqual(['gemini-weekly', 'gemini-5h', 'gemini-argon-wtu-weekly'])
+    expect(merged.buckets.map(b => b.id)).toEqual(['gemini-weekly', 'gemini-5h', 'client-only-weekly'])
     expect(merged.buckets.find(b => b.id === 'gemini-weekly')!.remainingFraction).toBe(0) // live, not the old 50%
     expect(merged.buckets.at(-1)!.observedAt).toBe(now - 3 * 3_600_000)
     // A second closed refresh keeps the original sighting time; after the reset the value is dropped.
     expect(carryOverBuckets(merged, closed, now + 3_600_000).buckets.at(-1)!.observedAt).toBe(now - 3 * 3_600_000)
-    expect(carryOverBuckets(merged, closed, Date.parse('2026-11-21T14:00:00Z')).buckets.map(b => b.id)).not.toContain('gemini-argon-wtu-weekly')
+    expect(carryOverBuckets(merged, closed, Date.parse('2026-11-21T14:00:00Z')).buckets.map(b => b.id)).not.toContain('client-only-weekly')
     // Once Antigravity reports again, its own reading replaces everything.
     expect(carryOverBuckets(merged, local, now)).toBe(local)
+  })
+
+  it('drops the retired Gemini 4 Argon limit, live or remembered', () => {
+    const argon = { id: 'gemini-argon-wtu-weekly', group: 'Gemini 4 Argon', label: 'Gemini 4 Argon Weekly Limit', window: 'weekly', remainingFraction: 0.33, resetTime: now + 86_400_000, description: null, observedAt: now - 3_600_000 }
+    const closed = { plan: 'Google AI Pro', availablePromptCredits: null, monthlyPromptCredits: null, source: 'google' as const, fetchedAt: now, buckets: geminiWindowsFromHosts([weekly, fiveHour], now) }
+    expect(carryOverBuckets({ ...closed, buckets: [...closed.buckets, argon] }, closed, now).buckets.map(b => b.id)).toEqual(['gemini-weekly', 'gemini-5h'])
+    const open = { ...closed, source: 'antigravity' as const, buckets: [...closed.buckets, argon] }
+    expect(carryOverBuckets(null, open, now).buckets.map(b => b.id)).toEqual(['gemini-weekly', 'gemini-5h'])
   })
 })
 

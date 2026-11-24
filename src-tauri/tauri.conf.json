@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Usage",
-  "version": "1.0.0-rc.19",
+  "version": "1.0.0-rc.20",
   "identifier": "io.github.clascheurduturfu.aiusage",
   "build": {
     "beforeDevCommand": "npm run build:broker && npm run dev:ui",

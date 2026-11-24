@@ -11,7 +11,7 @@ export interface ProxyRoute {
 export interface ProxyRecord {
   id: string; name: string; port: number; autostart: boolean; clientSecretRef?: string; routes: ProxyRoute[]; authMode?: 'none' | 'key'; managedEndpointId?: string
 }
-export type AgentId = 'claude' | 'claude-desktop' | 'codex' | 'gemini' | 'antigravity' | 'cursor' | 'cline' | 'opencode' | 'zcode' | 'copilot'
+export type AgentId = 'claude' | 'claude-desktop' | 'codex' | 'gemini' | 'antigravity' | 'cursor' | 'cline' | 'opencode' | 'zcode' | 'copilot' | 'mistral' | 'kimi' | 'deepseek' | 'pi'
 export interface AgentProfile {
   id: string; name: string; agentId: AgentId; mcpNames: string[]; disabledSkills: string[]
   instructions: boolean; endpointId?: string; proxyId?: string; model?: string; claudeCompatibility?: boolean
@@ -38,7 +38,8 @@ export interface SkillFolder {
   skills: string[]
 }
 /** Agents that load MCP tool schemas on demand themselves; compact mode and eager cost do not apply. */
-export const LAZY_TOOL_AGENTS: readonly AgentId[] = ['claude', 'antigravity']
+// pi reaches MCP tools through its codemode tool by default instead of loading every schema.
+export const LAZY_TOOL_AGENTS: readonly AgentId[] = ['claude', 'antigravity', 'pi']
 export const COMPACT_SUFFIX = '@compact'
 export interface McpMetrics {
   /** Tool count and serialized schema size from the last tools/list seen. */
@@ -48,7 +49,7 @@ export interface McpMetrics {
   trackedSince?: number
 }
 export interface ProxyStatus { id: string; state: 'stopped' | 'running' | 'error'; port: number; requests: number; error?: string }
-export interface AgentInfo { id: AgentId; name: string; installed: boolean; configPath: string; skillControl: 'native' | 'shared' | 'none'; endpointSupport: boolean; restartRequired: boolean; note?: string }
+export interface AgentInfo { id: AgentId; name: string; installed: boolean; configPath: string; skillControl: 'native' | 'shared' | 'none'; endpointSupport: boolean; restartRequired: boolean; note?: string; surfaces?: import('./harnesses').SurfaceState[] }
 export interface AntigravityStatus { state: string; detail: string; skills: number; expected?: number; libraryCount?: number; servers: Array<{ name: string; state: string; tools: number; detail?: string }>; checkedAt: number }
 export interface SkillInfo { name: string; description: string; path: string; valid: boolean; issue?: string }
 export interface McpSource { kind: 'npm' | 'blender' | 'workspace' | 'workspace-gws' | 'aws' | 'cua-driver'; version: string; package?: string; revision?: string; args?: string[] }

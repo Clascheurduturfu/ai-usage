@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { ClaudeQuotaDTO } from '../shared/types'
 
@@ -78,12 +78,37 @@ export function claudeCli(home = os.homedir(), platform: NodeJS.Platform = proce
   return null
 }
 
+const expired = (oauth: OAuth): boolean => typeof oauth.expiresAt === 'number' && oauth.expiresAt < Date.now() + 60_000
+
+/**
+ * macOS: `claude auth status` reports the sign-in without renewing the Keychain copy (seen with
+ * 2.1.325 and 2.1.330 on 2026-11-21), while starting Claude Code renews it before any prompt, as
+ * running `claude` in a terminal does. Start it in a hidden terminal (`script` gives it one), wait
+ * until the saved sign-in is valid again, then close it. No prompt is sent, so no quota is used.
+ */
+export function startClaudeHidden(cli: string, read: typeof readClaudeOAuth = readClaudeOAuth, limitMs = 30_000): Promise<boolean> {
+  return new Promise(resolve => {
+    const env: NodeJS.ProcessEnv = { ...process.env, TERM: process.env.TERM || 'xterm-256color' }; delete env.CLAUDE_CODE_OAUTH_TOKEN; delete env.ANTHROPIC_API_KEY
+    let child: ChildProcess, done = false, timer: NodeJS.Timeout | undefined
+    const stop = (ok: boolean): void => {
+      if (done) return; done = true; clearInterval(timer)
+      // The terminal and Claude Code share a process group of their own.
+      try { process.kill(-child.pid!, 'SIGTERM') } catch { child?.kill('SIGTERM') }
+      resolve(ok)
+    }
+    try { child = spawn('/usr/bin/script', ['-q', '/dev/null', cli], { cwd: os.homedir(), env, stdio: ['pipe', 'ignore', 'ignore'], detached: true }) } catch { resolve(false); return }
+    child.on('error', () => stop(false))
+    const started = Date.now()
+    timer = setInterval(() => { void read().then(oauth => { if (oauth?.accessToken && !expired(oauth)) stop(true); else if (Date.now() - started > limitMs) stop(false) }, () => undefined) }, 2_000)
+  })
+}
+
 let lastRenewal = { at: 0, error: undefined as string | undefined }
 /**
  * Lets Claude Code renew its expired CLI sign-in (see the note at the top). At most once every
  * 10 minutes; returns why it could not, or undefined when Claude Code says it is signed in.
  */
-export async function renewClaudeSignIn(run: typeof exec = exec, cli = claudeCli()): Promise<string | undefined> {
+export async function renewClaudeSignIn(run: typeof exec = exec, cli = claudeCli(), read: typeof readClaudeOAuth = readClaudeOAuth, platform: NodeJS.Platform = process.platform, start = startClaudeHidden): Promise<string | undefined> {
   if (Date.now() - lastRenewal.at < 10 * 60_000) return lastRenewal.error
   lastRenewal = { at: Date.now(), error: undefined }
   if (!cli) return (lastRenewal.error = 'Claude Code is not installed as a command on this device')
@@ -93,12 +118,14 @@ export async function renewClaudeSignIn(run: typeof exec = exec, cli = claudeCli
     const status = JSON.parse(String(stdout).trim() || '{}')
     if (status.loggedIn === false) lastRenewal.error = 'Claude Code is signed out on this device'
   } catch (error) { lastRenewal.error = `renewing failed (${(error as Error).message.split(/\r?\n/)[0].slice(0, 160)})` }
+  if (!lastRenewal.error && platform === 'darwin') {
+    const now = await read().catch(() => null)
+    if (now?.accessToken && expired(now) && !await start(cli, read)) lastRenewal.error = 'starting Claude Code did not renew it within 30 seconds'
+  }
   return lastRenewal.error
 }
 /** Test hook: forget the last renewal attempt. */
 export function resetClaudeRenewal(): void { lastRenewal = { at: 0, error: undefined } }
-
-const expired = (oauth: OAuth): boolean => typeof oauth.expiresAt === 'number' && oauth.expiresAt < Date.now() + 60_000
 
 export async function fetchClaudeQuota(deps: { read?: typeof readClaudeOAuth; renew?: () => Promise<string | undefined> } = {}): Promise<ClaudeQuotaDTO> {
   const read = deps.read ?? readClaudeOAuth, renew = deps.renew ?? (() => renewClaudeSignIn())
