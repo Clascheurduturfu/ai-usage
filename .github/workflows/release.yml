@@ -3,8 +3,8 @@ name: Publish release
 # On demand only. Stable publishes a final version from main; Preview publishes the
 # rolling prerelease from the preview branch. The in-app updater (src/main/updater.ts)
 # relies on this contract: tag v<version>, prerelease flag matching the version, one
-# `AI Usage_<version>_x64-setup.exe` and one `AI Usage_<version>_aarch64.dmg`, each with
-# GitHub's SHA-256 asset digest.
+# `AI.Usage_<version>_x64-setup.exe` and one `AI.Usage_<version>_aarch64.dmg` (Tauri's
+# "AI Usage_…" with the space GitHub turns into a dot), each with GitHub's SHA-256 asset digest.
 on:
   workflow_dispatch:
     inputs:
@@ -61,8 +61,10 @@ jobs:
         include:
           - os: windows-latest
             artifact: windows-x64
+            package: src-tauri/target/release/bundle/nsis/*-setup.exe
           - os: macos-15
             artifact: macos-apple-silicon
+            package: src-tauri/target/release/bundle/dmg/*.dmg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -85,9 +87,8 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-${{ matrix.artifact }}
-          path: |
-            src-tauri/target/release/bundle/nsis/*-setup.exe
-            src-tauri/target/release/bundle/dmg/*.dmg
+          # One path per platform, so the package sits at the artifact's root (two paths would keep nsis/ and dmg/).
+          path: ${{ matrix.package }}
           if-no-files-found: error
           retention-days: 3
 
@@ -116,6 +117,8 @@ jobs:
           ls -l packages
           [ -f "packages/AI Usage_${VERSION}_x64-setup.exe" ] && [ -f "packages/AI Usage_${VERSION}_aarch64.dmg" ] || { echo "::error::Built packages do not match version $VERSION"; exit 1; }
           [ "$(ls packages | wc -l)" -eq 2 ] || { echo "::error::Expected exactly two packages"; exit 1; }
+          # GitHub turns the space in an asset name into a dot, so upload them under that name already.
+          for f in packages/*; do mv "$f" "packages/$(basename "$f" | tr ' ' '.')"; done
           (cd packages && sha256sum * > ../SHA256SUMS && cat ../SHA256SUMS)
       - name: Create draft and upload
         run: |
@@ -127,7 +130,7 @@ jobs:
       - name: Verify uploaded bytes
         run: |
           set -euo pipefail
-          mkdir check && gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir check --pattern 'AI Usage_*'
+          mkdir check && gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir check --pattern 'AI.Usage_*'
           (cd check && sha256sum -c ../SHA256SUMS)
       - name: Publish
         run: |
@@ -142,7 +145,7 @@ jobs:
             const releases = require("./releases.json"), v = process.env.VERSION, stable = process.env.CHANNEL === "stable"
             const r = releases.find(x => x.tag_name === "v" + v)
             if (!r || r.draft || r.prerelease === stable) throw new Error("published release not visible with the right channel flag")
-            for (const name of [`AI Usage_${v}_x64-setup.exe`, `AI Usage_${v}_aarch64.dmg`]) {
+            for (const name of [`AI.Usage_${v}_x64-setup.exe`, `AI.Usage_${v}_aarch64.dmg`]) {
               const a = r.assets.find(x => x.name === name)
               if (!a || !/^sha256:[0-9a-f]{64}$/.test(a.digest ?? "")) throw new Error(`${name} missing or without a digest`)
             }

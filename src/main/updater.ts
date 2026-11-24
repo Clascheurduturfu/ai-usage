@@ -12,7 +12,8 @@ import type { UpdateChannel, UpdatePrefs, UpdateStatus } from '../shared/update'
  *   Preview releases are published prereleases with a prerelease version (1.1.0-beta.3).
  * - Preview users are also offered a newer Stable, so they never get stuck behind it.
  * - One package per platform, named by Tauri: `AI Usage_<version>_x64-setup.exe` (Windows)
- *   and `AI Usage_<version>_aarch64.dmg` (Apple Silicon).
+ *   and `AI Usage_<version>_aarch64.dmg` (Apple Silicon). GitHub stores the space as a dot
+ *   (`AI.Usage_…`), so only the `_<version>_` part and the platform ending are matched.
  * - Every package must carry GitHub's `sha256:` asset digest. A package without one is not
  *   installed in the app; the Releases page stays available for a manual install.
  */

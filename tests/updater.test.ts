@@ -37,6 +37,11 @@ describe('release selection', () => {
     expect(pick.version).toBe('1.1.0-beta.10'); expect(pick.asset.name).toBe('AI Usage_1.1.0-beta.10_x64-setup.exe'); expect(pick.sha256).toBe(sha)
     expect(selectUpdate(feed, 'preview', '1.0.2', 'darwin', 'arm64')?.asset.name).toBe('AI Usage_1.1.0-beta.10_aarch64.dmg')
   })
+  it('accepts the names GitHub stores, where the space became a dot', () => {
+    const dotted = (r: GhRelease): GhRelease => ({ ...r, assets: r.assets.map(a => ({ ...a, name: a.name.replace(' ', '.') })) })
+    expect(selectUpdate([dotted(release('v1.0.0-rc.21', true))], 'preview', '1.0.0-rc.19', 'darwin', 'arm64')?.asset.name).toBe('AI.Usage_1.0.0-rc.21_aarch64.dmg')
+    expect(selectUpdate([dotted(release('v1.0.0-rc.21', true))], 'preview', '1.0.0-rc.19', 'win32', 'x64')?.asset.name).toBe('AI.Usage_1.0.0-rc.21_x64-setup.exe')
+  })
   it('offers Preview users a newer Stable', () => {
     expect(selectUpdate([...feed, release('v1.1.0', false)], 'preview', '1.1.0-beta.10', 'win32', 'x64')?.version).toBe('1.1.0')
   })
