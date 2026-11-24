@@ -13,29 +13,48 @@ export function dshHome(settings?: Pick<Settings, 'paths'>): string {
   return settings?.paths.deepseek?.trim() || process.env.DSH_HOME?.trim() || path.join(os.homedir(), '.dsh')
 }
 
-const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+const ZSTD_MAGIC = 0xfd2fb528
+/**
+ * Where the zstd frame starting at `at` ends, read from its frame and block headers (RFC 8878 §3.1),
+ * or -1 when it is cut short or is not a frame. Skippable frames carry their own length.
+ */
+export function zstdFrameEnd(data: Buffer, at: number): number {
+  if (at + 8 > data.length) return -1
+  const magic = data.readUInt32LE(at)
+  if ((magic & 0xfffffff0) >>> 0 === 0x184d2a50) { const end = at + 8 + data.readUInt32LE(at + 4); return end <= data.length ? end : -1 }
+  if (magic !== ZSTD_MAGIC) return -1
+  const fhd = data[at + 4], single = (fhd >> 5) & 1, sizeFlag = fhd >> 6
+  // Frame header: descriptor, window byte (unless single segment), dictionary id, content size.
+  let pos = at + 5 + (single ? 0 : 1) + [0, 1, 2, 4][fhd & 3] + (sizeFlag ? [0, 2, 4, 8][sizeFlag] : single)
+  for (;;) {
+    if (pos + 3 > data.length) return -1
+    const block = data.readUIntLE(pos, 3), type = (block >> 1) & 3
+    if (type === 3) return -1
+    // Raw and compressed blocks carry Block_Size bytes; an RLE block carries one.
+    pos += 3 + (type === 1 ? 1 : block >>> 3)
+    if (block & 1) break
+  }
+  pos += (fhd >> 2) & 1 ? 4 : 0
+  return pos <= data.length ? pos : -1
+}
+
+type Decompress = (b: Buffer) => Buffer
+const nodeZstd = (zlib as unknown as { zstdDecompressSync?: Decompress }).zstdDecompressSync
 /**
  * Session logs are JSONL compressed as independent zstd frames (one for the header, one per append).
- * A crash can leave the last frame cut short: decode frame by frame and keep what is complete.
+ * Each frame is decoded on its own: Node 24 decodes only the first frame of a concatenation, while
+ * Node 26 decodes them all. A crash can leave the last frame cut short; what is complete is kept.
  */
-export function decodeZstdFrames(data: Buffer): string {
-  const decompress = (zlib as unknown as { zstdDecompressSync?: (b: Buffer) => Buffer }).zstdDecompressSync
+export function decodeZstdFrames(data: Buffer, decompress: Decompress | undefined = nodeZstd): string {
   if (!decompress) throw new Error('this runtime cannot read zstd session logs')
-  try { return decompress(data).toString('utf8') } catch { /* a cut-off tail: split it into frames */ }
-  const starts: number[] = []
-  for (let i = data.indexOf(ZSTD_MAGIC); i >= 0; i = data.indexOf(ZSTD_MAGIC, i + 4)) starts.push(i)
-  let text = '', i = 0
-  while (i < starts.length) {
-    // A magic number can also occur inside compressed data: grow the frame until it decodes.
-    let next = -1
-    for (let j = i + 1; j <= starts.length && next < 0; j++) {
-      try { text += decompress(data.subarray(starts[i], j < starts.length ? starts[j] : data.length)).toString('utf8'); next = j }
-      catch { /* not a frame boundary yet */ }
-    }
-    if (next < 0) break // the cut-off last frame
-    i = next
+  const parts: Buffer[] = []
+  for (let at = 0; at < data.length;) {
+    const end = zstdFrameEnd(data, at)
+    if (end < 0) break // the cut-off last frame
+    if (data.readUInt32LE(at) === ZSTD_MAGIC) { try { parts.push(decompress(data.subarray(at, end))) } catch { break } }
+    at = end
   }
-  return text
+  return Buffer.concat(parts).toString('utf8')
 }
 
 /** The newest log generation of a session folder: `session.v4.jsonl.zstd` beats v3, v2 and the unversioned file. */

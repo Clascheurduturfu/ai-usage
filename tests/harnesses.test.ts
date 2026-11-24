@@ -66,6 +66,12 @@ describe('DeepSeek Harness sessions', () => {
     expect(decodeZstdFrames(Buffer.concat(frames))).toBe(line(header) + line(call('m1', 7, 812)))
     const cut = Buffer.concat([...frames, zlib.zstdCompressSync(Buffer.from(line(call('m2', 9, 5)))).subarray(0, 12)])
     expect(decodeZstdFrames(cut)).toBe(line(header) + line(call('m1', 7, 812)))
+    // Node 24 decodes only the first frame of a concatenation, so each frame must be decoded alone.
+    const seen: Buffer[] = []
+    decodeZstdFrames(cut, b => { seen.push(Buffer.from(b)); return zlib.zstdDecompressSync(b) })
+    expect(seen).toEqual(frames)
+    const skippable = Buffer.alloc(12); skippable.writeUInt32LE(0x184d2a50, 0); skippable.writeUInt32LE(4, 4)
+    expect(decodeZstdFrames(Buffer.concat([frames[0], skippable, frames[1]]))).toBe(line(header) + line(call('m1', 7, 812)))
   })
   it('records each call once and skips what a fork inherited', () => {
     const events = parseDshSession([header, call('m1', 7, 812)].map(line).join(''), 'x/session.v4.jsonl.zstd')
